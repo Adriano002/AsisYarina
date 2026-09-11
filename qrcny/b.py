@@ -747,42 +747,103 @@ def validar_importacion(df, mapeo):
 
 
 def insertar_validas(validas):
+    """Inserta alumnos en bloque para máxima velocidad."""
+    if not validas:
+        return 0
+    
     conn = get_db()
     c = conn.cursor()
-    turnos_map = {r["nombre"]: r["id"] for r in query_all("SELECT id, nombre FROM turnos")}
     insertados = 0
-    for v in validas:
-        try:
-            c.execute("SELECT id FROM grados WHERE nombre=%s", (v["grado"],))
-            g = c.fetchone()
-            if g:
-                g_id = g["id"]
-            else:
-                c.execute("INSERT INTO grados (nombre) VALUES (%s) RETURNING id", (v["grado"],))
-                g_id = c.fetchone()["id"]
-
-            t_id = turnos_map[v["turno"]]
-            c.execute("SELECT id FROM secciones WHERE nombre=%s AND grado_id=%s AND turno_id=%s",
-                      (v["seccion"], g_id, t_id))
-            s = c.fetchone()
-            if s:
-                s_id = s["id"]
-            else:
-                c.execute("INSERT INTO secciones (nombre, grado_id, turno_id) VALUES (%s,%s,%s) RETURNING id",
-                          (v["seccion"], g_id, t_id))
-                s_id = c.fetchone()["id"]
-
-            c.execute("""INSERT INTO alumnos
-                (dni, nombres, apellido_paterno, apellido_materno, seccion_id, nombre_apoderado, telefono_apoderado)
-                VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (dni) DO NOTHING""",
-                (v["dni"], v["nombres"], v["apellido_paterno"], v["apellido_materno"],
-                 s_id, v["apoderado_nombre"] or None, v["apoderado_telefono"] or None))
-            if c.rowcount > 0:
-                insertados += 1
-        except Exception:
-            pass
-    conn.commit()
-    conn.close()
+    
+    try:
+        # ===== 1. Cargar turnos, grados y secciones existentes en memoria =====
+        c.execute("SELECT id, nombre FROM turnos")
+        turnos_map = {r["nombre"]: r["id"] for r in c.fetchall()}
+        
+        c.execute("SELECT id, nombre FROM grados")
+        grados_map = {r["nombre"]: r["id"] for r in c.fetchall()}
+        
+        c.execute("SELECT id, nombre, grado_id, turno_id FROM secciones")
+        secciones_map = {(r["nombre"], r["grado_id"], r["turno_id"]): r["id"] for r in c.fetchall()}
+        
+        # ===== 2. Detectar grados y secciones nuevos =====
+        grados_nuevos = set()
+        secciones_nuevas = set()
+        
+        for v in validas:
+            grado_nombre = v["grado"]
+            turno_id = turnos_map.get(v["turno"])
+            if grado_nombre not in grados_map:
+                grados_nuevos.add(grado_nombre)
+            # Buscamos el grado_id tentativo
+            grado_id_tentativo = grados_map.get(grado_nombre)
+            if grado_id_tentativo:
+                key = (v["seccion"], grado_id_tentativo, turno_id)
+                if key not in secciones_map:
+                    secciones_nuevas.add(key)
+        
+        # ===== 3. Insertar grados nuevos en bloque =====
+        if grados_nuevos:
+            for g in grados_nuevos:
+                c.execute("INSERT INTO grados (nombre) VALUES (%s) ON CONFLICT (nombre) DO NOTHING RETURNING id, nombre", (g,))
+                row = c.fetchone()
+                if row:
+                    grados_map[row["nombre"]] = row["id"]
+                else:
+                    # Ya existía, recuperar
+                    c.execute("SELECT id FROM grados WHERE nombre=%s", (g,))
+                    grados_map[g] = c.fetchone()["id"]
+        
+        # ===== 4. Insertar secciones nuevas en bloque =====
+        if secciones_nuevas:
+            for (sec_nombre, grado_id, turno_id) in secciones_nuevas:
+                c.execute("""INSERT INTO secciones (nombre, grado_id, turno_id)
+                             VALUES (%s, %s, %s) ON CONFLICT (nombre, grado_id, turno_id) DO NOTHING
+                             RETURNING id""",
+                          (sec_nombre, grado_id, turno_id))
+                row = c.fetchone()
+                if row:
+                    secciones_map[(sec_nombre, grado_id, turno_id)] = row["id"]
+                else:
+                    c.execute("""SELECT id FROM secciones
+                                 WHERE nombre=%s AND grado_id=%s AND turno_id=%s""",
+                              (sec_nombre, grado_id, turno_id))
+                    secciones_map[(sec_nombre, grado_id, turno_id)] = c.fetchone()["id"]
+        
+        # ===== 5. Preparar todos los datos de alumnos =====
+        datos_alumnos = []
+        for v in validas:
+            grado_id = grados_map.get(v["grado"])
+            turno_id = turnos_map.get(v["turno"])
+            seccion_id = secciones_map.get((v["seccion"], grado_id, turno_id))
+            if seccion_id:
+                datos_alumnos.append((
+                    v["dni"], v["nombres"], v["apellido_paterno"], v["apellido_materno"],
+                    seccion_id, v["apoderado_nombre"] or None, v["apoderado_telefono"] or None
+                ))
+        
+        # ===== 6. Insertar TODOS los alumnos de golpe =====
+        if datos_alumnos:
+            from psycopg2.extras import execute_values
+            execute_values(
+                c,
+                """INSERT INTO alumnos
+                   (dni, nombres, apellido_paterno, apellido_materno, seccion_id,
+                    nombre_apoderado, telefono_apoderado)
+                   VALUES %s
+                   ON CONFLICT (dni) DO NOTHING""",
+                datos_alumnos,
+                template="(%s, %s, %s, %s, %s, %s, %s)"
+            )
+            insertados = c.rowcount
+        
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        st.error(f"Error al importar: {e}")
+    finally:
+        conn.close()
+    
     st.cache_data.clear()
     return insertados
 
