@@ -680,7 +680,7 @@ def _render_pdf_carnets(rows):
             colWidths=col_widths,
             rowHeights=row_heights
         )
-               t.setStyle(TableStyle([
+        t.setStyle(TableStyle([
             ("ALIGN", (0, 0), (-1, -1), "CENTER"),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             # Líneas guía VISIBLES para recortar
