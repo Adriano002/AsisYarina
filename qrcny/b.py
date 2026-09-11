@@ -557,20 +557,13 @@ def _pdf_base(titulo, subtitulo=None, paisaje=False):
     size = A4 if not paisaje else (A4[1], A4[0])
     doc = SimpleDocTemplate(buf, pagesize=size, rightMargin=25, leftMargin=25, topMargin=25, bottomMargin=25)
     estilos = getSampleStyleSheet()
-    el = []
-
-    def _pdf_base(titulo, subtitulo=None, paisaje=False):
-        buf = BytesIO()
-        size = A4 if not paisaje else (A4[1], A4[0])
-        doc = SimpleDocTemplate(buf, pagesize=size, rightMargin=25, leftMargin=25, topMargin=25, bottomMargin=25)
-        estilos = getSampleStyleSheet()
-        el = [Paragraph(f"<b>{titulo}</b>", estilos["Heading1"])]
-        if subtitulo:
-            el.append(Paragraph(subtitulo, estilos["Normal"]))
-        el.append(Paragraph(f"Generado: {ahora().strftime('%Y-%m-%d %H:%M')}", estilos["Normal"]))
-        el.append(Spacer(1, 15))
-        return buf, doc, el, estilos
-
+    el = [Paragraph(f"<b>{titulo}</b>", estilos["Heading1"])]
+    if subtitulo:
+        el.append(Paragraph(subtitulo, estilos["Normal"]))
+    el.append(Paragraph(f"Generado: {ahora().strftime('%Y-%m-%d %H:%M')}", estilos["Normal"]))
+    el.append(Spacer(1, 15))
+    return buf, doc, el, estilos
+    
 def pdf_tabla(df, titulo, subtitulo=None):
     buf, doc, el, estilos = _pdf_base(titulo, subtitulo, paisaje=len(df.columns) > 6)
     if not df.empty:
