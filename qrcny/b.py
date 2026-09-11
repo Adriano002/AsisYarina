@@ -1587,25 +1587,28 @@ def vista_alumnos():
                 cols = list(df.columns)
                 c1, c2 = st.columns(2)
                 with c1:
-                    m_dni = st.selectbox("DNI *", cols)
-                    m_nom = st.selectbox("Nombres *", cols)
-                    m_pat = st.selectbox("Apellido Paterno *", cols)
+                    m_dni = st.selectbox("DNI *", cols, key="map_dni")
+                    m_nom = st.selectbox("Nombres *", cols, key="map_nom")
+                    m_pat = st.selectbox("Apellido Paterno *", cols, key="map_pat")
                 with c2:
-                    m_mat = st.selectbox("Apellido Materno", [""] + cols)
-                    m_gra = st.selectbox("Grado *", cols)
-                    m_sec = st.selectbox("Sección *", cols)
-                    m_tur = st.selectbox("Turno *", cols)
+                    m_mat = st.selectbox("Apellido Materno", [""] + cols, key="map_mat")
+                    m_gra = st.selectbox("Grado *", cols, key="map_gra")
+                    m_sec = st.selectbox("Sección *", cols, key="map_sec")
+                    m_tur = st.selectbox("Turno *", cols, key="map_tur")
                 c3, c4 = st.columns(2)
                 with c3:
-                    m_apo_nom = st.selectbox("Nombre Apoderado", [""] + cols)
+                    m_apo_nom = st.selectbox("Nombre Apoderado", [""] + cols, key="map_apo_nom")
                 with c4:
-                    m_apo_tel = st.selectbox("Teléfono Apoderado", [""] + cols)
+                    m_apo_tel = st.selectbox("Teléfono Apoderado", [""] + cols, key="map_apo_tel")
                 validar = st.form_submit_button("🔍 Validar", type="primary", use_container_width=True)
+
             if validar:
-                mapeo = {"dni": m_dni, "nombres": m_nom, "apellido_paterno": m_pat,
-                         "apellido_materno": m_mat, "grado": m_gra, "seccion": m_sec,
-                         "turno": m_tur, "apoderado_nombre": m_apo_nom,
-                         "apoderado_telefono": m_apo_tel}
+                mapeo = {
+                    "dni": m_dni, "nombres": m_nom, "apellido_paterno": m_pat,
+                    "apellido_materno": m_mat, "grado": m_gra, "seccion": m_sec,
+                    "turno": m_tur, "apoderado_nombre": m_apo_nom,
+                    "apoderado_telefono": m_apo_tel,
+                }
                 validas, errores, stats = validar_importacion(df, mapeo)
                 st.session_state["_imp_validas"] = validas
                 st.session_state["_imp_errores"] = errores
@@ -1617,9 +1620,12 @@ def vista_alumnos():
                 c1.metric("Total", stats["total"])
                 c2.metric("✅ Válidas", stats["validas"])
                 c3.metric("❌ Errores", stats["errores"])
+
                 if st.session_state["_imp_errores"]:
                     with st.expander("⚠️ Errores"):
-                        st.dataframe(pd.DataFrame(st.session_state["_imp_errores"]), use_container_width=True)
+                        st.dataframe(pd.DataFrame(st.session_state["_imp_errores"]),
+                                     use_container_width=True)
+
                 if st.session_state["_imp_validas"]:
                     if st.button("✅ Importar SOLO válidas", type="primary", use_container_width=True):
                         n = insertar_validas(st.session_state["_imp_validas"])
@@ -1627,6 +1633,132 @@ def vista_alumnos():
                         for k in ["_imp_validas", "_imp_errores", "_imp_stats"]:
                             st.session_state.pop(k, None)
                         st.rerun()
+
+    with tab2:
+        grado_id, seccion_id, texto = filtros_grado_seccion_nombre(
+            key_prefix="al_list", placeholder_nombre="Ej: Torres"
+        )
+        q = """
+            SELECT a.dni, a.apellido_paterno, a.apellido_materno, a.nombres,
+                   g.nombre AS grado, s.nombre AS seccion, t.nombre AS turno,
+                   COALESCE(a.nombre_apoderado,'—') AS apoderado,
+                   COALESCE(a.telefono_apoderado,'—') AS telefono
+            FROM alumnos a
+            JOIN secciones s ON a.seccion_id = s.id
+            JOIN grados g ON s.grado_id = g.id
+            JOIN turnos t ON s.turno_id = t.id
+            WHERE 1=1
+        """
+        params = []
+        if grado_id:
+            q += " AND g.id = %s"
+            params.append(grado_id)
+        if seccion_id:
+            q += " AND s.id = %s"
+            params.append(seccion_id)
+        if texto:
+            palabras = [p.strip() for p in texto.split() if p.strip()]
+            for palabra in palabras:
+                q += " AND (a.nombres ILIKE %s OR a.apellido_paterno ILIKE %s OR a.apellido_materno ILIKE %s)"
+                like = f"%{palabra}%"
+                params += [like, like, like]
+        q += " ORDER BY g.nombre, s.nombre, a.apellido_paterno LIMIT 3000"
+        df = query_df(q, params)
+        st.write(f"**{len(df)} alumnos**")
+        st.dataframe(df, use_container_width=True)
+
+    with tab3:
+        grado_id, seccion_id, texto = filtros_grado_seccion_nombre(
+            key_prefix="al_edit", placeholder_nombre="Ej: Flores"
+        )
+        if texto or grado_id:
+            df = buscar_alumnos_por_nombre(texto, grado_id, seccion_id, limite=50)
+            for _, al in df.iterrows():
+                if st.button(f"✏️ {al['nombre_completo']} — {al['grado']}{al['seccion']}",
+                             key=f"e_{al['id']}", use_container_width=True):
+                    st.session_state["editar_dni"] = al["dni"]
+                    st.rerun()
+
+        dni_edit = st.session_state.get("editar_dni")
+        if dni_edit:
+            st.markdown("---")
+            al = query_one("""SELECT a.*, g.nombre AS grado, s.nombre AS seccion, t.nombre AS turno
+                              FROM alumnos a JOIN secciones s ON a.seccion_id = s.id
+                              JOIN grados g ON s.grado_id = g.id JOIN turnos t ON s.turno_id = t.id
+                              WHERE a.dni=%s""", (dni_edit,))
+            if not al:
+                st.warning("No encontrado.")
+                st.session_state.pop("editar_dni", None)
+            else:
+                st.markdown(f"### Editando: {al['apellido_paterno']} {al['apellido_materno'] or ''}, {al['nombres']}")
+                with st.form("edit_al"):
+                    n = st.text_input("Nombres", value=al["nombres"])
+                    p = st.text_input("Apellido Paterno", value=al["apellido_paterno"])
+                    m = st.text_input("Apellido Materno", value=al["apellido_materno"] or "")
+                    apo_nom = st.text_input("Nombre Apoderado", value=al["nombre_apoderado"] or "")
+                    apo_tel = st.text_input("Teléfono Apoderado", value=al["telefono_apoderado"] or "")
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        guardar = st.form_submit_button("💾 Guardar", type="primary", use_container_width=True)
+                    with c2:
+                        cancelar = st.form_submit_button("❌ Cancelar", use_container_width=True)
+                if guardar:
+                    query_exec("""UPDATE alumnos SET nombres=%s, apellido_paterno=%s, apellido_materno=%s,
+                                  nombre_apoderado=%s, telefono_apoderado=%s WHERE id=%s""",
+                               (n, p, m, apo_nom, apo_tel, al["id"]))
+                    auditar(st.session_state.user["usuario"], f"Editó alumno {dni_edit}")
+                    st.success("Actualizado.")
+                    st.cache_data.clear()
+                    st.session_state.pop("editar_dni", None)
+                    st.rerun()
+                if cancelar:
+                    st.session_state.pop("editar_dni", None)
+                    st.rerun()
+
+    with tab4:
+        st.subheader("🗑️ Eliminar alumno")
+        st.warning("⚠️ Esta acción **no se puede deshacer**.")
+        grado_id, seccion_id, texto = filtros_grado_seccion_nombre(
+            key_prefix="al_del", placeholder_nombre="Ej: Rojas"
+        )
+        if texto or grado_id:
+            df = buscar_alumnos_por_nombre(texto, grado_id, seccion_id, limite=50)
+            if df.empty:
+                st.info("Sin coincidencias.")
+            else:
+                for _, al in df.iterrows():
+                    if st.button(f"🗑️ {al['nombre_completo']} — {al['grado']}{al['seccion']}",
+                                 key=f"d_{al['id']}", use_container_width=True):
+                        st.session_state["eliminar_alumno"] = {
+                            "id": al["id"], "nombre": al["nombre_completo"], "dni": al["dni"]
+                        }
+                        st.rerun()
+
+        eliminar = st.session_state.get("eliminar_alumno")
+        if eliminar:
+            st.markdown("---")
+            st.error(f"¿Está seguro que desea eliminar a **{eliminar['nombre']}** (DNI {eliminar['dni']})?")
+            st.warning("Esta acción **no se puede deshacer**.")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("🗑️ SÍ, ELIMINAR", type="primary", use_container_width=True):
+                    try:
+                        query_exec("DELETE FROM asistencias WHERE alumno_id=%s", (eliminar["id"],))
+                        query_exec("DELETE FROM tardanzas WHERE alumno_id=%s", (eliminar["id"],))
+                        query_exec("DELETE FROM actas_compromiso WHERE alumno_id=%s", (eliminar["id"],))
+                        query_exec("DELETE FROM observados WHERE alumno_id=%s", (eliminar["id"],))
+                        query_exec("DELETE FROM alumnos WHERE id=%s", (eliminar["id"],))
+                        auditar(st.session_state.user["usuario"], f"Eliminó alumno DNI {eliminar['dni']}")
+                        st.success("✅ Alumno eliminado.")
+                        st.cache_data.clear()
+                        st.session_state.pop("eliminar_alumno", None)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+            with c2:
+                if st.button("❌ Cancelar", use_container_width=True):
+                    st.session_state.pop("eliminar_alumno", None)
+                    st.rerun()
 
     with tab2:
         grado_id, seccion_id, texto = filtros_grado_seccion_nombre(key_prefix="al_list", placeholder_nombre="Ej: Torres")
