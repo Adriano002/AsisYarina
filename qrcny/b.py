@@ -591,23 +591,15 @@ def pdf_tabla(df, titulo, subtitulo=None):
     return buf.getvalue()
 
 def _render_pdf_carnets(rows):
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.units import cm
-
     buf = BytesIO()
-    # Márgenes mínimos
     MARGEN = 8
     doc = SimpleDocTemplate(
-        buf,
-        pagesize=A4,
-        rightMargin=MARGEN,
-        leftMargin=MARGEN,
-        topMargin=MARGEN,
-        bottomMargin=MARGEN
+        buf, pagesize=A4,
+        rightMargin=MARGEN, leftMargin=MARGEN,
+        topMargin=MARGEN, bottomMargin=MARGEN
     )
     estilos = getSampleStyleSheet()
 
-    # Título
     if len(rows) > 1:
         titulo = f"Carnets - {rows[0]['grado']}{rows[0]['seccion']} ({rows[0]['turno']})"
     else:
@@ -615,25 +607,17 @@ def _render_pdf_carnets(rows):
 
     el = [Paragraph(titulo, estilos["Heading1"]), Spacer(1, 6)]
 
-    # ===== CÁLCULO EXACTO PARA 3x3 =====
     COLUMNAS = 3
     FILAS = 3
-    CARNTS_POR_PAGINA = COLUMNAS * FILAS  # = 9
+    CARNTS_POR_PAGINA = COLUMNAS * FILAS
 
-    # Dimensiones exactas de la hoja A4 (en puntos)
-    ancho_hoja = A4[0]     # 595.27
-    alto_hoja = A4[1]      # 841.89
-
-    # Espacio útil (descontando márgenes)
-    ancho_util = ancho_hoja - (2 * MARGEN)   # 579.27
-    alto_util = alto_hoja - (2 * MARGEN)     # 825.89
-
-    # Reservar ~50 puntos para el título (solo en la primera página)
+    ancho_hoja = A4[0]
+    alto_hoja = A4[1]
+    ancho_util = ancho_hoja - (2 * MARGEN)
+    alto_util = alto_hoja - (2 * MARGEN)
     alto_disponible = alto_util - 50
-
-    # Dimensiones de cada carnet (¡EXACTAS!)
-    ancho_carnet = ancho_util / COLUMNAS     # ≈ 193.09
-    alto_carnet = alto_disponible / FILAS    # ≈ 258.63
+    ancho_carnet = ancho_util / COLUMNAS
+    alto_carnet = alto_disponible / FILAS
 
     for i in range(0, len(rows), CARNTS_POR_PAGINA):
         lote = rows[i:i + CARNTS_POR_PAGINA]
@@ -645,48 +629,43 @@ def _render_pdf_carnets(rows):
                 qb = BytesIO()
                 qr_de_dni(a["dni"]).save(qb, format="PNG")
                 qb.seek(0)
-
-                # Contenido del carnet
                 celda = [
                     Paragraph(
-                        f"<b>{a['apellido_paterno']} {a['apellido_materno'] or ''}</b>",
+                        f"<b><font size=11>{a['apellido_paterno']} {a['apellido_materno'] or ''}</font></b>",
                         estilos["Normal"]
                     ),
-                    Paragraph(a["nombres"], estilos["Normal"]),
-                    Paragraph(f"DNI: {a['dni']}", estilos["Normal"]),
                     Paragraph(
-                        f"{a['grado']}{a['seccion']} - {a['turno']}",
+                        f"<font size=10>{a['nombres']}</font>",
                         estilos["Normal"]
                     ),
-                    RLImage(qb, width=100, height=100),  # QR grande para leer mejor
+                    Paragraph(
+                        f"<font size=10>DNI: {a['dni']}</font>",
+                        estilos["Normal"]
+                    ),
+                    Paragraph(
+                        f"<font size=9>{a['grado']}{a['seccion']} - {a['turno']}</font>",
+                        estilos["Normal"]
+                    ),
+                    RLImage(qb, width=150, height=150),
                 ]
                 fila.append(celda)
 
-            # Rellenar con celdas vacías si es la última fila incompleta
             while len(fila) < COLUMNAS:
                 fila.append([])
             tabla.append(fila)
 
-        # Rellenar filas vacías si es la última página
         while len(tabla) < FILAS:
             tabla.append([[] for _ in range(COLUMNAS)])
 
-        # Tabla con las dimensiones EXACTAS
         col_widths = [ancho_carnet] * COLUMNAS
         row_heights = [alto_carnet] * FILAS
 
-        t = Table(
-            tabla,
-            colWidths=col_widths,
-            rowHeights=row_heights
-        )
+        t = Table(tabla, colWidths=col_widths, rowHeights=row_heights)
         t.setStyle(TableStyle([
             ("ALIGN", (0, 0), (-1, -1), "CENTER"),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            # Líneas guía VISIBLES para recortar
             ("BOX", (0, 0), (-1, -1), 1.5, colors.black),
             ("INNERGRID", (0, 0), (-1, -1), 1, colors.black),
-            # Padding interno
             ("LEFTPADDING", (0, 0), (-1, -1), 3),
             ("RIGHTPADDING", (0, 0), (-1, -1), 3),
             ("TOPPADDING", (0, 0), (-1, -1), 3),
@@ -694,7 +673,6 @@ def _render_pdf_carnets(rows):
         ]))
         el.append(t)
 
-        # Salto de página (excepto en la última)
         if i + CARNTS_POR_PAGINA < len(rows):
             el.append(PageBreak())
 
