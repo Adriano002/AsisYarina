@@ -1,4 +1,4 @@
-BACKUP DE CPDIGO
+
 #importaciones
 import streamlit as st
 import sqlite3
