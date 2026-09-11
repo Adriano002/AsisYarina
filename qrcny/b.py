@@ -592,46 +592,92 @@ def pdf_tabla(df, titulo, subtitulo=None):
 
 def _render_pdf_carnets(rows):
     buf = BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=15, leftMargin=15, topMargin=15, bottomMargin=15)
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        rightMargin=10, leftMargin=10,
+        topMargin=10, bottomMargin=10
+    )
     estilos = getSampleStyleSheet()
+
     if len(rows) > 1:
         titulo = f"Carnets - {rows[0]['grado']}{rows[0]['seccion']} ({rows[0]['turno']})"
     else:
         titulo = f"Carnet - {rows[0]['apellido_paterno']} {rows[0]['apellido_materno'] or ''}, {rows[0]['nombres']}"
-    el = [Paragraph(titulo, estilos["Heading1"]), Spacer(1, 20)]
-    for i in range(0, len(rows), 6):
-        lote = rows[i:i+6]
+
+    el = [Paragraph(titulo, estilos["Heading1"]), Spacer(1, 10)]
+
+    # ═══════════════════════════════════════════════════════════════
+    # AHORA: 9 carnets por hoja (3 columnas × 3 filas)
+    # ═══════════════════════════════════════════════════════════════
+    CARNTS_POR_FILA = 3
+    FILAS_POR_PAGINA = 3
+    CARNTS_POR_PAGINA = CARNTS_POR_FILA * FILAS_POR_PAGINA  # = 9
+
+    # Ancho y alto disponibles
+    ancho_disponible = doc.width   # ≈ 575 puntos
+    alto_disponible = doc.height   # ≈ 822 puntos
+
+    # Reservamos espacio para el título en la primera página
+    alto_util = alto_disponible - 40  # dejamos 40 puntos para el título
+
+    ancho_carnet = ancho_disponible / CARNTS_POR_FILA  # ≈ 191 puntos
+    alto_carnet = alto_util / FILAS_POR_PAGINA         # ≈ 260 puntos
+
+    for i in range(0, len(rows), CARNTS_POR_PAGINA):
+        lote = rows[i:i + CARNTS_POR_PAGINA]
         tabla = []
-        for j in range(0, len(lote), 3):
+
+        for j in range(0, len(lote), CARNTS_POR_FILA):
             fila = []
-            for a in lote[j:j+3]:
+            for a in lote[j:j + CARNTS_POR_FILA]:
                 qb = BytesIO()
                 qr_de_dni(a["dni"]).save(qb, format="PNG")
                 qb.seek(0)
-                fila.append([
-                    Paragraph(f"<b>{a['apellido_paterno']} {a['apellido_materno'] or ''}</b>", estilos["Normal"]),
+
+                celda = [
+                    Paragraph(f"<b>{a['apellido_paterno']} {a['apellido_materno'] or ''}</b>",
+                              estilos["Normal"]),
                     Paragraph(a["nombres"], estilos["Normal"]),
                     Paragraph(f"DNI: {a['dni']}", estilos["Normal"]),
                     Paragraph(f"{a['grado']}{a['seccion']} - {a['turno']}", estilos["Normal"]),
-                    RLImage(qb, width=60, height=60),
-                ])
-            while len(fila) < 3:
+                    RLImage(qb, width=80, height=80),
+                ]
+                fila.append(celda)
+
+            # Rellenar con celdas vacías si es la última fila incompleta
+            while len(fila) < CARNTS_POR_FILA:
                 fila.append([])
             tabla.append(fila)
-        t = Table(tabla, colWidths=[180, 180, 180], rowHeights=[150]*len(tabla))
+
+        # Si la última página tiene menos de 3 filas, rellenar
+        while len(tabla) < FILAS_POR_PAGINA:
+            tabla.append([[] for _ in range(CARNTS_POR_FILA)])
+
+        # Crear la tabla con las dimensiones calculadas
+        col_widths = [ancho_carnet] * CARNTS_POR_FILA
+        row_heights = [alto_carnet] * len(tabla)
+
+        t = Table(tabla, colWidths=col_widths, rowHeights=row_heights)
         t.setStyle(TableStyle([
             ("ALIGN", (0, 0), (-1, -1), "CENTER"),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ("BOX", (0, 0), (-1, -1), 1, colors.black),
             ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
         ]))
         el.append(t)
-        if i + 6 < len(rows):
+
+        # Salto de página entre bloques
+        if i + CARNTS_POR_PAGINA < len(rows):
             el.append(PageBreak())
+
     doc.build(el)
     buf.seek(0)
     return buf.getvalue()
-
 def pdf_carnets_por_seccion(seccion_id):
     conn = get_db()
     rows = conn.execute("""
