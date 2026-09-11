@@ -680,11 +680,13 @@ def _render_pdf_carnets(rows):
             colWidths=col_widths,
             rowHeights=row_heights
         )
-        t.setStyle(TableStyle([
+               t.setStyle(TableStyle([
             ("ALIGN", (0, 0), (-1, -1), "CENTER"),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("BOX", (0, 0), (-1, -1), 1, colors.black),
-            ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            # Líneas guía VISIBLES para recortar
+            ("BOX", (0, 0), (-1, -1), 1.5, colors.black),
+            ("INNERGRID", (0, 0), (-1, -1), 1, colors.black),
+            # Padding interno
             ("LEFTPADDING", (0, 0), (-1, -1), 3),
             ("RIGHTPADDING", (0, 0), (-1, -1), 3),
             ("TOPPADDING", (0, 0), (-1, -1), 3),
