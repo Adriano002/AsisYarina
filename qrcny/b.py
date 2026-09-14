@@ -1388,21 +1388,14 @@ def vista_toece():
     usuario = st.session_state.user
     hoy = hoy_str()
     
-    if "last_refresh_toece" not in st.session_state:
-        st.session_state.last_refresh_toece = time.time()
+    st_autorefresh(interval=30 * 1000, key="toece_autorefresh")
     
     c1, c2 = st.columns([1, 5])
     with c1:
         if st.button("Actualizar", width="stretch", key="refresh_toece"):
-            st.session_state.last_refresh_toece = time.time()
             st.rerun()
     with c2:
-        segundos_desde = int(time.time() - st.session_state.last_refresh_toece)
-        st.caption(f"Auto-refresh cada 30s (hace {segundos_desde}s)")
-    
-    if time.time() - st.session_state.last_refresh_toece > 30:
-        st.session_state.last_refresh_toece = time.time()
-        st.rerun()
+        st.caption("Auto-refresh cada 30s")
     
     if "_msg_acta" in st.session_state:
         st.success(st.session_state["_msg_acta"])
@@ -1493,21 +1486,14 @@ def vista_panel_direccion():
     hoy = hoy_str()
     marcar_faltas_al_cierre()
     
-    if "last_refresh_panel" not in st.session_state:
-        st.session_state.last_refresh_panel = time.time()
+    st_autorefresh(interval=30 * 1000, key="panel_autorefresh")
     
     c1, c2 = st.columns([1, 5])
     with c1:
         if st.button("Actualizar", width="stretch", key="refresh_panel"):
-            st.session_state.last_refresh_panel = time.time()
             st.rerun()
     with c2:
-        segundos_desde = int(time.time() - st.session_state.last_refresh_panel)
-        st.caption(f"Auto-refresh cada 30s (hace {segundos_desde}s)")
-    
-    if time.time() - st.session_state.last_refresh_panel > 30:
-        st.session_state.last_refresh_panel = time.time()
-        st.rerun()
+        st.caption("Auto-refresh cada 30s")
     
     m = metricas_dia(hoy)
     
