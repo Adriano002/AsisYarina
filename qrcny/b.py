@@ -352,33 +352,34 @@ def horario_del_dia(turno_id, fecha=None, seccion_id=None):
     
     return {**horario_normal, "especial": False, "reforzamiento": None}
 
-def detectar_tipo_escaneo(h, hora_actual_corta):
+def detectar_tipo_escaneo(h, hora_actual_corta, alumno_id=None):
+    """
+    Determina si el escaneo es de clases o reforzamiento.
+    - Reforzamiento solo si el alumno está asignado y está en su ventana.
+    - Clases: se acepta desde cualquier hora temprana hasta hora_salida.
+    """
     hora_entrada = h["hora_entrada"]
     hora_salida = h["hora_salida"]
     refuerzo = h.get("reforzamiento")
     
-    if not refuerzo:
-        if hora_entrada <= hora_actual_corta <= hora_salida:
-            return "clases"
-        return "fuera"
+    # 1) Si hay reforzamiento y está en su ventana
+    if refuerzo and alumno_id:
+        hora_inicio_ref = refuerzo.get("hora_reforzamiento")
+        hora_fin_ref = refuerzo.get("hora_salida_reforzamiento") or "23:59"
+        if hora_inicio_ref <= hora_actual_corta <= hora_fin_ref:
+            if alumno_en_reforzamiento(refuerzo["id"], alumno_id):
+                return "reforzamiento"
+            else:
+                # No asignado, pero ¿está dentro de clases?
+                if hora_actual_corta <= hora_salida:
+                    return "clases"
+                return "fuera"
     
-    tipo_ref = refuerzo.get("tipo_reforzamiento")
-    hora_inicio_ref = refuerzo.get("hora_reforzamiento")
-    hora_fin_ref = refuerzo.get("hora_salida_reforzamiento") or "23:59"
+    # 2) Clases: desde cualquier hora temprana hasta hora_salida
+    if hora_actual_corta <= hora_salida:
+        return "clases"
     
-    if tipo_ref == "antes":
-        if hora_inicio_ref <= hora_actual_corta < hora_entrada:
-            return "reforzamiento"
-        if hora_entrada <= hora_actual_corta <= hora_salida:
-            return "clases"
-        return "fuera"
-    elif tipo_ref == "despues":
-        if hora_entrada <= hora_actual_corta < hora_salida:
-            return "clases"
-        if hora_salida <= hora_actual_corta <= hora_fin_ref:
-            return "reforzamiento"
-        return "fuera"
-    
+    # 3) Fuera
     return "fuera"
 
 def calcular_estado_refuerzo(refuerzo, hora_actual_corta):
@@ -419,22 +420,16 @@ def registrar_entrada(dni, usuario):
     hora_actual_corta = hora_corta()
     hora_actual = hora_str()
     h = horario_del_dia(al["turno_id"], hoy, al["seccion_id"])
-    tipo_escaneo = detectar_tipo_escaneo(h, hora_actual_corta)
+    tipo_escaneo = detectar_tipo_escaneo(h, hora_actual_corta, al["id"])
     
     existente = conn.execute("SELECT * FROM asistencias WHERE alumno_id=? AND fecha=?", (al["id"], hoy)).fetchone()
     nombre_completo = f"{al['apellido_paterno']} {al['apellido_materno'] or ''}, {al['nombres']}".strip(", ")
     
     if tipo_escaneo == "fuera":
         conn.close()
-        if h.get("reforzamiento"):
-            ref = h["reforzamiento"]
-            return False, "ERROR", (
-                f"Fuera de horario. Ventanas hoy: "
-                f"clases {h['hora_entrada']}-{h['hora_salida']}, "
-                f"reforzamiento {ref['hora_reforzamiento']}-{ref.get('hora_salida_reforzamiento') or '?'}"
-            ), {}
-        return False, "ERROR", f"Fuera de horario de clases ({h['hora_entrada']}-{h['hora_salida']})", {}
+        return False, "ERROR", f"Fuera de horario (clases {h['hora_entrada']}-{h['hora_salida']})", {}
     
+    # ===== REFORZAMIENTO =====
     if tipo_escaneo == "reforzamiento":
         refuerzo = h["reforzamiento"]
         
@@ -464,6 +459,7 @@ def registrar_entrada(dni, usuario):
         auditar(usuario["usuario"], f"Reforzamiento {estado_ref} DNI {dni}")
         return True, "REFORZAMIENTO", f"{nombre_completo} | {al['grado']}{al['seccion']} | REFORZAMIENTO {estado_ref} {hora_actual_corta}", al
     
+    # ===== CLASES NORMALES =====
     if existente and existente["hora"]:
         conn.close()
         return False, "ERROR", f"Ya registrado hoy en clases como {existente['estado']}", {}
@@ -529,9 +525,10 @@ def marcar_faltas_al_cierre():
             conn.close()
             return
     
+    # Faltas de CLASES NORMALES: al pasar hora_salida
     for t in turnos():
         h = horario_del_dia(t["id"], hoy)
-        if hora_actual_corta < h["hora_limite"]:
+        if hora_actual_corta < h["hora_salida"]:
             continue
         conn.execute("""INSERT OR IGNORE INTO asistencias (alumno_id, fecha, hora, estado)
                         SELECT a.id, ?, ?, 'Falta' FROM alumnos a
@@ -539,6 +536,7 @@ def marcar_faltas_al_cierre():
                         WHERE s.turno_id = ?""",
                      (hoy, hora_str(), t["id"]))
     
+    # Faltas de REFORZAMIENTO: al pasar hora_salida_reforzamiento, solo asignados
     reforzamientos = conn.execute("""
         SELECT d.id AS dia_id, d.hora_salida_reforzamiento
         FROM dias_especiales d
@@ -573,26 +571,40 @@ def marcar_faltas_al_cierre():
     conn.commit()
     conn.close()
 
-def justificar_falta(alumno_id, justificada, observacion, usuario):
+def justificar_falta(alumno_id, fecha, justificada, observacion, usuario):
+    if usuario["rol"] not in ("Admin", "TOECE"):
+        return False, "Solo Admin o TOECE pueden justificar faltas"
+    
+    fecha_dt = datetime.strptime(fecha, "%Y-%m-%d")
+    ahora_dt = ahora().replace(tzinfo=None)
+    diferencia = (ahora_dt.date() - fecha_dt.date()).days
+    if diferencia > 2:
+        return False, f"No se puede justificar una falta con más de 48 horas ({diferencia} días de antigüedad)"
+    if diferencia < 0:
+        return False, "No se puede justificar una falta con fecha futura"
+    
     conn = get_db()
     al = conn.execute("SELECT apellido_paterno, apellido_materno, nombres FROM alumnos WHERE id=?",
                       (alumno_id,)).fetchone()
     if not al:
         conn.close()
         return False, "Alumno no encontrado"
+    
     falta = conn.execute("SELECT id FROM asistencias WHERE alumno_id=? AND fecha=? AND estado='Falta'",
-                         (alumno_id, hoy_str())).fetchone()
+                         (alumno_id, fecha)).fetchone()
     if not falta:
         conn.close()
-        return False, "Ese alumno no tiene una Falta registrada hoy"
+        return False, f"Ese alumno no tiene una Falta registrada el {fecha}"
+    
     conn.execute("UPDATE asistencias SET justificada=?, observacion=? WHERE id=?",
                  (1 if justificada else 0, observacion, falta["id"]))
     conn.commit()
     conn.close()
+    
     nombre = f"{al['apellido_paterno']} {al['apellido_materno'] or ''}, {al['nombres']}".strip(", ")
     estado_txt = "JUSTIFICADA" if justificada else "INJUSTIFICADA"
-    auditar(usuario["usuario"], f"Falta de alumno_id={alumno_id} -> {estado_txt}")
-    return True, f"Falta de {nombre} marcada como {estado_txt}"
+    auditar(usuario["usuario"], f"Falta de {nombre} ({fecha}) -> {estado_txt}")
+    return True, f"Falta de {nombre} ({fecha}) marcada como {estado_txt}"
 
 def editar_estado_asistencia(alumno_id, nuevo_estado, observacion, usuario):
     if usuario["rol"] != "Admin":
@@ -1254,6 +1266,121 @@ def vista_escanear_reforzamiento():
             width="stretch"
         )
     conn.close()
+
+def vista_faltas():
+    st.title("Faltas - Justificar / Editar")
+    usuario = st.session_state.user
+    
+    if usuario["rol"] not in ("Admin", "TOECE"):
+        st.error("Solo Admin y TOECE pueden acceder a esta vista.")
+        return
+    
+    if "_msg_falta" in st.session_state:
+        st.success(st.session_state["_msg_falta"])
+        del st.session_state["_msg_falta"]
+    
+    hoy_dt = ahora().date()
+    limite_dt = hoy_dt - timedelta(days=2)
+    st.caption(f"⚠️ Solo se pueden justificar faltas desde {limite_dt.strftime('%Y-%m-%d')} hasta hoy (48 horas).")
+    
+    c1, c2, c3 = st.columns([2, 2, 3])
+    with c1:
+        fecha_filtro = st.date_input("Fecha de la falta",
+                                     value=hoy_dt,
+                                     min_value=limite_dt,
+                                     max_value=hoy_dt,
+                                     key="falt_fecha")
+    with c2:
+        grados = grados_lista()
+        opciones_grado = [{"id": None, "nombre": "Todos"}] + grados
+        grado_sel = st.selectbox("Grado", opciones_grado,
+                                 format_func=lambda g: g["nombre"], key="falt_grado")
+    with c3:
+        if grado_sel and grado_sel["id"]:
+            secs = [{"id": None, "nombre": "Todas"}] + secciones_por_grado(grado_sel["id"])
+        else:
+            secs = [{"id": None, "nombre": "Todas"}]
+        seccion_sel = st.selectbox("Sección", secs,
+                                   format_func=lambda s: s["nombre"], key="falt_seccion")
+    
+    grado_id = grado_sel["id"] if grado_sel else None
+    seccion_id = seccion_sel["id"] if (grado_sel and grado_sel["id"] and seccion_sel) else None
+    fecha_str = fecha_filtro.strftime("%Y-%m-%d")
+    
+    q = """
+        SELECT ast.id AS asist_id, a.id AS alumno_id, a.dni,
+               a.apellido_paterno || ' ' || COALESCE(a.apellido_materno,'') AS apellidos,
+               a.nombres, g.nombre AS grado, s.nombre AS seccion, t.nombre AS turno,
+               ast.fecha, ast.justificada, COALESCE(ast.observacion,'') AS observacion
+        FROM asistencias ast
+        JOIN alumnos a ON ast.alumno_id = a.id
+        JOIN secciones s ON a.seccion_id = s.id
+        JOIN grados g ON s.grado_id = g.id
+        JOIN turnos t ON s.turno_id = t.id
+        WHERE ast.estado='Falta' AND ast.fecha = ?
+    """
+    params = [fecha_str]
+    if grado_id:
+        q += " AND g.id = ?"; params.append(grado_id)
+    if seccion_id:
+        q += " AND s.id = ?"; params.append(seccion_id)
+    q += " ORDER BY t.nombre, g.nombre, s.nombre, a.apellido_paterno"
+    
+    conn = get_db()
+    df = pd.read_sql(q, conn, params=params)
+    conn.close()
+    
+    if df.empty:
+        st.info(f"No hay faltas registradas para el {fecha_str} con esos filtros.")
+    else:
+        st.write(f"**{len(df)} faltas** encontradas")
+        df["estado"] = df["justificada"].map({1: "Justificada", 0: "Injustificada"})
+        st.dataframe(
+            df[["fecha", "dni", "apellidos", "nombres", "grado", "seccion", "turno",
+                "estado", "observacion"]],
+            width="stretch"
+        )
+    
+    st.markdown("---")
+    st.subheader("Justificar o injustificar una falta")
+    
+    if not df.empty:
+        opciones_alumnos = {}
+        for _, r in df.iterrows():
+            etiqueta = f"{r['apellidos']}, {r['nombres']} - {r['grado']}{r['seccion']} ({r['estado']})"
+            opciones_alumnos[etiqueta] = r["alumno_id"]
+        
+        sel_al = st.selectbox("Selecciona un alumno de la lista",
+                              list(opciones_alumnos.keys()), key="falt_j_alumno")
+        alumno_id_sel = opciones_alumnos[sel_al]
+        
+        fila = df[df["alumno_id"] == alumno_id_sel].iloc[0]
+        
+        with st.form("form_justificar"):
+            justificada_actual = bool(fila["justificada"])
+            nueva_just = st.radio("Estado",
+                                  ["Justificada", "Injustificada"],
+                                  index=0 if justificada_actual else 1,
+                                  horizontal=True,
+                                  key="falt_j_estado")
+            obs_nueva = st.text_area("Observación (motivo)",
+                                     value=fila["observacion"],
+                                     placeholder="Ej: Presentó certificado médico",
+                                     key="falt_j_obs")
+            guardar = st.form_submit_button("Guardar cambio", type="primary", width="stretch")
+        
+        if guardar:
+            ok, msg = justificar_falta(alumno_id_sel, fecha_str,
+                                       nueva_just == "Justificada",
+                                       obs_nueva, usuario)
+            if ok:
+                st.session_state["_msg_falta"] = msg
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.error(msg)
+    else:
+        st.info("No hay faltas para justificar con los filtros seleccionados.")
 
 def vista_toece():
     st.title("TOECE - Derivados y Observados")
@@ -2136,13 +2263,58 @@ def vista_seleccionar_alumnos_reforzamiento():
                 f"**Secciones:** {ref_info['secciones']} | "
                 f"**Hora:** {ref_info['hora_entrada']} - {ref_info['hora_salida_reforzamiento'] or '?'}")
     
+    conn = get_db()
+    secs_permitidas = conn.execute("""
+        SELECT ds.seccion_id, g.nombre || s.nombre AS nombre_completo,
+               g.id AS grado_id, s.id AS seccion_id
+        FROM dias_especiales_secciones ds
+        JOIN secciones s ON ds.seccion_id = s.id
+        JOIN grados g ON s.grado_id = g.id
+        WHERE ds.dia_especial_id = ?
+    """, (ref_id,)).fetchall()
+    conn.close()
+    
+    if not secs_permitidas:
+        st.warning("Este reforzamiento no tiene secciones asignadas. Edítalo en Días Especiales.")
+        return
+    
+    ids_secciones_permitidas = {r["seccion_id"] for r in secs_permitidas}
+    nombres_secciones = [r["nombre_completo"] for r in secs_permitidas]
+    
+    st.info(f"⚠️ Solo puedes asignar alumnos de estas secciones: **{', '.join(nombres_secciones)}**")
+    
     st.markdown("---")
     st.subheader("Seleccionar alumnos")
     st.caption("Marca los alumnos que van a este reforzamiento. "
                "Los asignados que NO escaneen tendrán Falta en reforzamiento.")
     
-    grado_id, seccion_id, texto = filtros_grado_seccion_nombre(
-        key_prefix="ref_sel", placeholder_nombre="Ej: Pérez")
+    grados_disponibles_ids = {r["grado_id"] for r in secs_permitidas}
+    grados_all = grados_lista()
+    grados_disponibles = [g for g in grados_all if g["id"] in grados_disponibles_ids]
+    
+    c1, c2, c3 = st.columns([2, 2, 3])
+    with c1:
+        opciones_grado = [{"id": None, "nombre": "Todos"}] + grados_disponibles
+        grado_sel = st.selectbox("Grado", opciones_grado,
+                                 format_func=lambda g: g["nombre"], key="ref_sel_grado")
+    with c2:
+        if grado_sel and grado_sel["id"]:
+            secs_all = secciones_por_grado(grado_sel["id"])
+            secs_filtradas = [s for s in secs_all if s["id"] in ids_secciones_permitidas]
+            secs = [{"id": None, "nombre": "Todas"}] + secs_filtradas
+        else:
+            secs = [{"id": None, "nombre": "Todas"}] + [
+                {"id": r["seccion_id"], "nombre": r["nombre_completo"]}
+                for r in secs_permitidas
+            ]
+        seccion_sel = st.selectbox("Sección", secs,
+                                   format_func=lambda s: s["nombre"], key="ref_sel_seccion")
+    with c3:
+        texto = st.text_input("Buscar por nombre", placeholder="Ej: Pérez", key="ref_sel_nombre")
+    
+    grado_id = grado_sel["id"] if grado_sel else None
+    seccion_id = seccion_sel["id"] if (grado_sel and grado_sel["id"] and seccion_sel) else None
+    texto = texto.strip()
     
     if not (grado_id or seccion_id or texto):
         st.info("Selecciona un grado, sección o escribe un nombre para ver los alumnos.")
@@ -2159,7 +2331,13 @@ def vista_seleccionar_alumnos_reforzamiento():
         st.info("Sin alumnos con esos filtros.")
         return
     
-    st.write(f"**{len(df)} alumnos**")
+    df = df[df["seccion_id"].isin(ids_secciones_permitidas)]
+    
+    if df.empty:
+        st.warning("No hay alumnos de las secciones permitidas que coincidan con los filtros.")
+        return
+    
+    st.write(f"**{len(df)} alumnos** (de las secciones permitidas)")
     
     with st.form("form_sel_alumnos_ref"):
         seleccionados = []
@@ -2172,6 +2350,17 @@ def vista_seleccionar_alumnos_reforzamiento():
         guardar = st.form_submit_button("Guardar selección", type="primary", width="stretch")
     
     if guardar:
+        conn = get_db()
+        for al_id in seleccionados:
+            sec_al = conn.execute(
+                "SELECT seccion_id FROM alumnos WHERE id=?", (al_id,)
+            ).fetchone()
+            if not sec_al or sec_al["seccion_id"] not in ids_secciones_permitidas:
+                conn.close()
+                st.error(f"El alumno con ID {al_id} no pertenece a las secciones permitidas. Operación cancelada.")
+                return
+        conn.close()
+        
         conn = get_db()
         try:
             conn.execute("DELETE FROM reforzamiento_alumnos WHERE dia_especial_id=?", (ref_id,))
@@ -2702,8 +2891,8 @@ def _frag_editar_usuario():
 
 def vista_horarios():
     st.title("Horarios de turno")
-    st.caption("La hora de entrada define cuándo se marca Puntual/Tardanza. "
-               "La hora de salida cierra el registro de clases.")
+    st.caption("La hora de entrada define desde cuándo se acepta QR y la tolerancia para Puntual/Tardanza. "
+               "La hora de salida cierra el registro de clases y marca Faltas a los que no escanearon.")
     
     if "_msg_horario" in st.session_state:
         st.success(st.session_state["_msg_horario"])
@@ -2716,6 +2905,10 @@ def vista_horarios():
 @st.fragment
 def _frag_horario_turno(t):
     st.subheader(f"{t['nombre']}")
+    hora_limite_mostrada = suma_min(t["hora_entrada"], t["tolerancia_min"])
+    st.caption(f"⏰ Entrada: **{t['hora_entrada']}** · "
+               f"Límite puntual: **{hora_limite_mostrada}** (entrada + {t['tolerancia_min']} min) · "
+               f"Salida: **{t['hora_salida']}**")
     with st.form(f"hor_{t['id']}"):
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -2765,11 +2958,11 @@ def menu_lateral():
         st.markdown("---")
         
         opciones_por_rol = {
-            "Admin": ["Puerta", "TOECE", "Panel Dirección",
+            "Admin": ["Puerta", "TOECE", "Faltas", "Panel Dirección",
                       "Reportes y Consultas", "Alumnos", "Carnets",
                       "Días especiales", "Seleccionar Alumnos Reforzamiento",
                       "Horarios", "Usuarios", "Auditoría"],
-            "TOECE": ["TOECE", "Panel Dirección",
+            "TOECE": ["TOECE", "Faltas", "Panel Dirección",
                       "Reportes y Consultas", "Alumnos",
                       "Días especiales",
                       "Horarios"],
@@ -2808,6 +3001,7 @@ def main():
     vistas = {
         "Puerta":              vista_puerta,
         "TOECE":               vista_toece,
+        "Faltas":              vista_faltas,
         "Panel Dirección":    vista_panel_direccion,
         "Reportes y Consultas": vista_reportes,
         "Alumnos":             vista_alumnos,
