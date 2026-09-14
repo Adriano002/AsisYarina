@@ -17,7 +17,6 @@ import time
 
 st.set_page_config(page_title="Asistencia I.E. Yarinacocha", page_icon="escudo.png", layout="wide")
 
-# ===== CSS: SOLO BOTONES ANARANJADOS =====
 st.markdown("""
 <style>
     .stButton > button {
@@ -62,7 +61,6 @@ st.markdown("""
 
 DB_PATH = "asistencia.db"
 
-# ===== UTILIDADES =====
 def ahora():
     return datetime.now(timezone.utc) - timedelta(hours=5)
 
@@ -71,6 +69,9 @@ def hoy_str():
 
 def hora_str():
     return ahora().strftime("%H:%M:%S")
+
+def hora_corta():
+    return ahora().strftime("%H:%M")
 
 def suma_min(hhmm_, mins):
     t = datetime.strptime(hhmm_, "%H:%M") + timedelta(minutes=mins)
@@ -83,7 +84,6 @@ def es_dia_laboral(fecha=None):
 MESES_ES = ["", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
             "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
 
-# ===== BASE DE DATOS =====
 def get_db():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -165,6 +165,14 @@ def init_db():
         FOREIGN KEY (seccion_id) REFERENCES secciones(id),
         UNIQUE(dia_especial_id, seccion_id)
     );
+    CREATE TABLE IF NOT EXISTS reforzamiento_alumnos (
+        id INTEGER PRIMARY KEY,
+        dia_especial_id INTEGER NOT NULL,
+        alumno_id INTEGER NOT NULL,
+        FOREIGN KEY (dia_especial_id) REFERENCES dias_especiales(id) ON DELETE CASCADE,
+        FOREIGN KEY (alumno_id) REFERENCES alumnos(id),
+        UNIQUE(dia_especial_id, alumno_id)
+    );
     CREATE TABLE IF NOT EXISTS usuarios (
         id INTEGER PRIMARY KEY, usuario TEXT UNIQUE NOT NULL,
         password TEXT NOT NULL, rol TEXT NOT NULL, nombres TEXT NOT NULL,
@@ -183,9 +191,9 @@ def init_db():
     CREATE INDEX IF NOT EXISTS idx_actas_alumno ON actas_compromiso(alumno_id);
     CREATE INDEX IF NOT EXISTS idx_obs_alumno ON observados(alumno_id, activo);
     CREATE INDEX IF NOT EXISTS idx_des_secciones ON dias_especiales_secciones(dia_especial_id);
+    CREATE INDEX IF NOT EXISTS idx_ref_alumnos ON reforzamiento_alumnos(dia_especial_id);
     """)
 
-    # Migraciones
     cols_turnos = [r["name"] for r in c.execute("PRAGMA table_info(turnos)").fetchall()]
     if "hora_salida" not in cols_turnos:
         c.execute("ALTER TABLE turnos ADD COLUMN hora_salida TEXT")
@@ -216,7 +224,6 @@ def init_db():
     if "telefono_apoderado" not in cols_al:
         c.execute("ALTER TABLE alumnos ADD COLUMN telefono_apoderado TEXT")
 
-    # Actualizar turnos existentes con hora_salida
     c.execute("UPDATE turnos SET hora_salida='12:20' WHERE nombre='Mañana' AND (hora_salida IS NULL OR hora_salida='')")
     c.execute("UPDATE turnos SET hora_salida='17:00' WHERE nombre='Tarde' AND (hora_salida IS NULL OR hora_salida='')")
 
@@ -246,7 +253,6 @@ def _init_once():
 
 _init_once()
 
-# ===== SERVICIOS =====
 def autenticar(usuario, password):
     conn = get_db()
     r = conn.execute("SELECT * FROM usuarios WHERE usuario=? AND activo=1", (usuario,)).fetchone()
@@ -285,24 +291,14 @@ def secciones_por_grado(grado_id):
     conn.close()
     return [dict(r) for r in rows]
 
-# ===== REFORZAMIENTO =====
-def obtener_config_reforzamiento(fecha, seccion_id):
-    if not seccion_id:
-        return None
+def alumno_en_reforzamiento(dia_especial_id, alumno_id):
     conn = get_db()
-    row = conn.execute("""
-        SELECT d.tipo_reforzamiento, d.hora_entrada AS hora_reforzamiento,
-               d.hora_salida_reforzamiento, d.tolerancia_reforzamiento
-        FROM dias_especiales d
-        JOIN dias_especiales_secciones ds ON d.id = ds.dia_especial_id
-        WHERE d.fecha=? AND d.activo=1 AND d.tipo='evento'
-          AND d.tipo_reforzamiento IS NOT NULL AND ds.seccion_id=?
-        LIMIT 1
-    """, (fecha, seccion_id)).fetchone()
+    r = conn.execute(
+        "SELECT id FROM reforzamiento_alumnos WHERE dia_especial_id=? AND alumno_id=?",
+        (dia_especial_id, alumno_id)
+    ).fetchone()
     conn.close()
-    if not row:
-        return None
-    return dict(row)
+    return r is not None
 
 def horario_del_dia(turno_id, fecha=None, seccion_id=None):
     fecha = fecha or hoy_str()
@@ -311,8 +307,8 @@ def horario_del_dia(turno_id, fecha=None, seccion_id=None):
     refuerzo = None
     if seccion_id:
         ref_row = conn.execute("""
-            SELECT d.tipo_reforzamiento, d.hora_entrada AS hora_reforzamiento,
-                   d.hora_salida_reforzamiento, d.tolerancia_reforzamiento
+            SELECT d.id, d.tipo_reforzamiento, d.hora_entrada AS hora_reforzamiento,
+                   d.hora_salida_reforzamiento, d.tolerancia_reforzamiento, d.descripcion
             FROM dias_especiales d
             JOIN dias_especiales_secciones ds ON d.id = ds.dia_especial_id
             WHERE d.fecha=? AND d.activo=1 AND d.tipo='evento'
@@ -356,45 +352,47 @@ def horario_del_dia(turno_id, fecha=None, seccion_id=None):
     
     return {**horario_normal, "especial": False, "reforzamiento": None}
 
-def detectar_tipo_escaneo(h, hora_actual):
+def detectar_tipo_escaneo(h, hora_actual_corta):
+    hora_entrada = h["hora_entrada"]
+    hora_salida = h["hora_salida"]
     refuerzo = h.get("reforzamiento")
+    
     if not refuerzo:
-        return "clases"
+        if hora_entrada <= hora_actual_corta <= hora_salida:
+            return "clases"
+        return "fuera"
     
     tipo_ref = refuerzo.get("tipo_reforzamiento")
     hora_inicio_ref = refuerzo.get("hora_reforzamiento")
-    hora_fin_ref = refuerzo.get("hora_salida_reforzamiento")
-    tolerancia_ref = refuerzo.get("tolerancia_reforzamiento") or 7
-    hora_limite_ref = suma_min(hora_inicio_ref, tolerancia_ref)
-    hora_entrada_normal = h.get("hora_entrada")
-    hora_salida_normal = h.get("hora_salida")
+    hora_fin_ref = refuerzo.get("hora_salida_reforzamiento") or "23:59"
     
     if tipo_ref == "antes":
-        if hora_actual < hora_entrada_normal:
+        if hora_inicio_ref <= hora_actual_corta < hora_entrada:
             return "reforzamiento"
-        else:
+        if hora_entrada <= hora_actual_corta <= hora_salida:
             return "clases"
+        return "fuera"
     elif tipo_ref == "despues":
-        if hora_actual >= hora_salida_normal:
-            return "reforzamiento"
-        else:
+        if hora_entrada <= hora_actual_corta < hora_salida:
             return "clases"
+        if hora_salida <= hora_actual_corta <= hora_fin_ref:
+            return "reforzamiento"
+        return "fuera"
     
-    return "clases"
+    return "fuera"
 
-def calcular_estado_refuerzo(refuerzo, hora_actual):
+def calcular_estado_refuerzo(refuerzo, hora_actual_corta):
     hora_inicio = refuerzo.get("hora_reforzamiento")
     tolerancia = refuerzo.get("tolerancia_reforzamiento") or 7
     hora_limite = suma_min(hora_inicio, tolerancia)
-    if hora_actual <= hora_limite + ":59":
+    if hora_actual_corta <= hora_limite:
         return "Puntual"
     return "Tardanza"
 
-# ===== REGISTRAR ENTRADA =====
 def registrar_entrada(dni, usuario):
     dni = (dni or "").strip()
     if not re.fullmatch(r"\d{8}", dni):
-        return False, "ERROR", "DNI invalido", {}
+        return False, "ERROR", "DNI inválido (debe tener 8 dígitos)", {}
     
     conn = get_db()
     al = conn.execute("""
@@ -415,25 +413,40 @@ def registrar_entrada(dni, usuario):
     if usuario["rol"] == "Auxiliar" and usuario["turno_asignado"]:
         if al["turno_id"] != usuario["turno_asignado"]:
             conn.close()
-            return False, "ERROR", f"Este alumno es turno {al['turno']}. Tu turno es otro.", {}
+            return False, "ERROR", f"Este alumno es del turno {al['turno']}. Tu turno es otro.", {}
     
     hoy = hoy_str()
+    hora_actual_corta = hora_corta()
     hora_actual = hora_str()
     h = horario_del_dia(al["turno_id"], hoy, al["seccion_id"])
-    tipo_escaneo = detectar_tipo_escaneo(h, hora_actual)
+    tipo_escaneo = detectar_tipo_escaneo(h, hora_actual_corta)
     
     existente = conn.execute("SELECT * FROM asistencias WHERE alumno_id=? AND fecha=?", (al["id"], hoy)).fetchone()
     nombre_completo = f"{al['apellido_paterno']} {al['apellido_materno'] or ''}, {al['nombres']}".strip(", ")
     
-    # ===== REFORZAMIENTO =====
+    if tipo_escaneo == "fuera":
+        conn.close()
+        if h.get("reforzamiento"):
+            ref = h["reforzamiento"]
+            return False, "ERROR", (
+                f"Fuera de horario. Ventanas hoy: "
+                f"clases {h['hora_entrada']}-{h['hora_salida']}, "
+                f"reforzamiento {ref['hora_reforzamiento']}-{ref.get('hora_salida_reforzamiento') or '?'}"
+            ), {}
+        return False, "ERROR", f"Fuera de horario de clases ({h['hora_entrada']}-{h['hora_salida']})", {}
+    
     if tipo_escaneo == "reforzamiento":
         refuerzo = h["reforzamiento"]
         
+        if not alumno_en_reforzamiento(refuerzo["id"], al["id"]):
+            conn.close()
+            return False, "ERROR", f"{al['nombres']} {al['apellido_paterno']} NO está en la lista de este reforzamiento", {}
+        
         if existente and existente["hora_reforzamiento"]:
             conn.close()
-            return False, "ERROR", f"Ya registro reforzamiento hoy como {existente['estado_reforzamiento']}", {}
+            return False, "ERROR", f"Ya registró reforzamiento hoy como {existente['estado_reforzamiento']}", {}
         
-        estado_ref = calcular_estado_refuerzo(refuerzo, hora_actual)
+        estado_ref = calcular_estado_refuerzo(refuerzo, hora_actual_corta)
         
         if existente:
             conn.execute("""UPDATE asistencias 
@@ -449,14 +462,13 @@ def registrar_entrada(dni, usuario):
         conn.commit()
         conn.close()
         auditar(usuario["usuario"], f"Reforzamiento {estado_ref} DNI {dni}")
-        return True, "REFORZAMIENTO", f"{nombre_completo} | {al['grado']}{al['seccion']} | REFORZAMIENTO {estado_ref} {hora_actual}", al
+        return True, "REFORZAMIENTO", f"{nombre_completo} | {al['grado']}{al['seccion']} | REFORZAMIENTO {estado_ref} {hora_actual_corta}", al
     
-    # ===== CLASES NORMALES =====
     if existente and existente["hora"]:
         conn.close()
-        return False, "ERROR", f"Ya registrado hoy como {existente['estado']}", {}
+        return False, "ERROR", f"Ya registrado hoy en clases como {existente['estado']}", {}
     
-    if hora_actual <= h["hora_limite"] + ":59":
+    if hora_actual_corta <= h["hora_limite"]:
         estado = "Puntual"
         if existente:
             conn.execute("UPDATE asistencias SET hora=?, estado=? WHERE id=?",
@@ -467,9 +479,8 @@ def registrar_entrada(dni, usuario):
         conn.commit()
         conn.close()
         auditar(usuario["usuario"], f"Entrada PUNTUAL DNI {dni}")
-        return True, "PUNTUAL", f"{nombre_completo} | {al['grado']}{al['seccion']} | PUNTUAL {hora_actual}", al
+        return True, "PUNTUAL", f"{nombre_completo} | {al['grado']}{al['seccion']} | PUNTUAL {hora_actual_corta}", al
     
-    # Tardanza
     ult_acta = conn.execute("SELECT fecha FROM actas_compromiso WHERE alumno_id=? ORDER BY fecha DESC LIMIT 1",
                             (al["id"],)).fetchone()
     desde = ult_acta["fecha"] if ult_acta else "1900-01-01"
@@ -478,13 +489,13 @@ def registrar_entrada(dni, usuario):
     
     if numero <= 2:
         accion = "PERDONADO"
-        mensaje = f"{nombre_completo} | Tardanza {numero}a (perdonada) {hora_actual}"
+        mensaje = f"{nombre_completo} | Tardanza {numero}ª (perdonada) {hora_actual_corta}"
     elif numero == 3:
         accion = "DERIVADO_TOECE"
-        mensaje = f"{nombre_completo} | Tardanza 3a -> DERIVAR A TOECE {hora_actual}"
+        mensaje = f"{nombre_completo} | Tardanza 3ª -> DERIVAR A TOECE {hora_actual_corta}"
     else:
         accion = "RETENIDO_APODERADO"
-        mensaje = f"{nombre_completo} | Tardanza {numero}a -> NO PASA hasta apoderado {hora_actual}"
+        mensaje = f"{nombre_completo} | Tardanza {numero}ª -> NO PASA hasta apoderado {hora_actual_corta}"
     
     if existente:
         conn.execute("UPDATE asistencias SET hora=?, estado='Tardanza' WHERE id=?",
@@ -499,16 +510,16 @@ def registrar_entrada(dni, usuario):
                   ahora().strftime("%Y-%m-%d %H:%M:%S")))
     conn.commit()
     conn.close()
-    auditar(usuario["usuario"], f"Tardanza {numero}a DNI {dni} -> {accion}")
+    auditar(usuario["usuario"], f"Tardanza {numero}ª DNI {dni} -> {accion}")
     return True, "TARDANZA", mensaje, {**al, "numero": numero, "accion": accion}
 
-# ===== MARCAR FALTAS AL CIERRE =====
 def marcar_faltas_al_cierre():
     ult = st.session_state.get("_ult_faltas")
     if ult and (ahora() - ult).total_seconds() < 300:
         return
     st.session_state["_ult_faltas"] = ahora()
     hoy = hoy_str()
+    hora_actual_corta = hora_corta()
     conn = get_db()
     
     if not es_dia_laboral():
@@ -518,10 +529,9 @@ def marcar_faltas_al_cierre():
             conn.close()
             return
     
-    # Faltas de CLASES NORMALES
     for t in turnos():
         h = horario_del_dia(t["id"], hoy)
-        if hora_str() < h["hora_limite"]:
+        if hora_actual_corta < h["hora_limite"]:
             continue
         conn.execute("""INSERT OR IGNORE INTO asistencias (alumno_id, fecha, hora, estado)
                         SELECT a.id, ?, ?, 'Falta' FROM alumnos a
@@ -529,33 +539,40 @@ def marcar_faltas_al_cierre():
                         WHERE s.turno_id = ?""",
                      (hoy, hora_str(), t["id"]))
     
-    # Faltas de REFORZAMIENTO
     reforzamientos = conn.execute("""
-        SELECT d.id, d.hora_salida_reforzamiento, ds.seccion_id
+        SELECT d.id AS dia_id, d.hora_salida_reforzamiento
         FROM dias_especiales d
-        JOIN dias_especiales_secciones ds ON d.id = ds.dia_especial_id
-        WHERE d.fecha=? AND d.activo=1 AND d.tipo='evento' AND d.tipo_reforzamiento IS NOT NULL
+        WHERE d.fecha=? AND d.activo=1 AND d.tipo='evento'
+          AND d.tipo_reforzamiento IS NOT NULL
     """, (hoy,)).fetchall()
     
     for ref in reforzamientos:
         hora_fin_ref = ref["hora_salida_reforzamiento"] or "23:59"
-        if hora_str() < hora_fin_ref:
+        if hora_actual_corta < hora_fin_ref:
             continue
+        
         conn.execute("""UPDATE asistencias 
                         SET estado_reforzamiento='Falta', hora_reforzamiento=?
-                        WHERE fecha=? AND estado_reforzamiento IS NULL 
-                          AND alumno_id IN (SELECT id FROM alumnos WHERE seccion_id=?)""",
-                     (hora_str(), hoy, ref["seccion_id"]))
-        conn.execute("""INSERT OR IGNORE INTO asistencias (alumno_id, fecha, hora_reforzamiento, estado_reforzamiento)
-                        SELECT a.id, ?, ?, 'Falta' FROM alumnos a
-                        WHERE a.seccion_id = ? 
-                          AND a.id NOT IN (SELECT alumno_id FROM asistencias WHERE fecha=?)""",
-                     (hoy, hora_str(), ref["seccion_id"], hoy))
+                        WHERE fecha=? AND estado_reforzamiento IS NULL
+                          AND alumno_id IN (
+                              SELECT alumno_id FROM reforzamiento_alumnos 
+                              WHERE dia_especial_id=?
+                          )""",
+                     (hora_str(), hoy, ref["dia_id"]))
+        
+        conn.execute("""INSERT OR IGNORE INTO asistencias 
+                        (alumno_id, fecha, hora_reforzamiento, estado_reforzamiento)
+                        SELECT ra.alumno_id, ?, ?, 'Falta'
+                        FROM reforzamiento_alumnos ra
+                        WHERE ra.dia_especial_id=?
+                          AND ra.alumno_id NOT IN (
+                              SELECT alumno_id FROM asistencias WHERE fecha=?
+                          )""",
+                     (hoy, hora_str(), ref["dia_id"], hoy))
     
     conn.commit()
     conn.close()
 
-# ===== HELPERS =====
 def justificar_falta(alumno_id, justificada, observacion, usuario):
     conn = get_db()
     al = conn.execute("SELECT apellido_paterno, apellido_materno, nombres FROM alumnos WHERE id=?",
@@ -592,11 +609,11 @@ def editar_estado_asistencia(alumno_id, nuevo_estado, observacion, usuario):
     if asist:
         conn.execute("UPDATE asistencias SET estado=?, observacion=? WHERE id=?",
                      (nuevo_estado, observacion, asist["id"]))
-        accion_txt = f"Edito asistencia: {asist['estado']} -> {nuevo_estado}"
+        accion_txt = f"Editó asistencia: {asist['estado']} -> {nuevo_estado}"
     else:
         conn.execute("INSERT INTO asistencias (alumno_id, fecha, hora, estado, observacion) VALUES (?,?,?,?,?)",
                      (alumno_id, hoy, hora_str(), nuevo_estado, observacion))
-        accion_txt = f"Creo asistencia manual: {nuevo_estado}"
+        accion_txt = f"Creó asistencia manual: {nuevo_estado}"
     conn.commit()
     conn.close()
     nombre = f"{al['apellido_paterno']} {al['apellido_materno'] or ''}, {al['nombres']}".strip(", ")
@@ -623,7 +640,7 @@ def liberar_observado(alumno_id, usuario):
                  (hoy_str(), alumno_id))
     conn.commit()
     conn.close()
-    auditar(usuario["usuario"], f"Libero observado alumno_id={alumno_id}")
+    auditar(usuario["usuario"], f"Liberó observado alumno_id={alumno_id}")
 
 @st.cache_data(ttl=30)
 def observados_dataframe(solo_activos=True):
@@ -647,7 +664,6 @@ def observados_dataframe(solo_activos=True):
     conn.close()
     return df
 
-# ===== METRICAS DIA (CORREGIDO) =====
 @st.cache_data(ttl=5)
 def metricas_dia(fecha):
     conn = get_db()
@@ -683,7 +699,6 @@ def ultimos_registros(fecha, limite=20):
     conn.close()
     return df
 
-# ===== HELPERS =====
 def filtros_grado_seccion_nombre(key_prefix, placeholder_nombre="Buscar por nombre", mostrar_todos=True):
     grados = grados_lista()
     c1, c2, c3 = st.columns([2, 2, 3])
@@ -695,7 +710,7 @@ def filtros_grado_seccion_nombre(key_prefix, placeholder_nombre="Buscar por nomb
             secs = ([{"id": None, "nombre": "Todas"}] if mostrar_todos else []) + secciones_por_grado(grado_sel["id"])
         else:
             secs = [{"id": None, "nombre": "Todas"}] if mostrar_todos else []
-        seccion_sel = st.selectbox("Seccion", secs, format_func=lambda s: s["nombre"],
+        seccion_sel = st.selectbox("Sección", secs, format_func=lambda s: s["nombre"],
                                    key=f"{key_prefix}_seccion") if secs else {"id": None, "nombre": "—"}
     with c3:
         texto = st.text_input("Buscar por nombre", placeholder=placeholder_nombre, key=f"{key_prefix}_nombre")
@@ -773,7 +788,6 @@ def exportar_excel_pdf(df, titulo, nombre_base, key_prefix="export"):
                            f"{nombre_base}.pdf", "application/pdf",
                            key=f"{key_prefix}_pdf", width="stretch")
 
-# ===== QR / PDF =====
 def qr_de_dni(dni):
     qr = qrcode.QRCode(version=1, box_size=10, border=4)
     qr.add_data(str(dni).strip())
@@ -936,7 +950,6 @@ def _df_to_xlsx(df, sheet_name="Datos"):
         df.to_excel(w, index=False, sheet_name=sheet_name)
     return buf.getvalue()
 
-# ===== IMPORTACION =====
 def validar_importacion(df, mapeo):
     errores, validas, dnis_en_excel = [], [], {}
     conn = get_db()
@@ -955,21 +968,21 @@ def validar_importacion(df, mapeo):
             apo_nom = str(row[mapeo['apoderado_nombre']]).strip() if mapeo.get('apoderado_nombre') else ""
             apo_tel = str(row[mapeo['apoderado_telefono']]).strip() if mapeo.get('apoderado_telefono') else ""
             if not dni:
-                errores.append({"fila": fila_num, "motivo": "DNI vacio"}); continue
+                errores.append({"fila": fila_num, "motivo": "DNI vacío"}); continue
             if not re.fullmatch(r"\d{8}", dni):
-                errores.append({"fila": fila_num, "motivo": f"DNI invalido '{dni}'"}); continue
+                errores.append({"fila": fila_num, "motivo": f"DNI inválido '{dni}'"}); continue
             if dni in dnis_bd:
                 errores.append({"fila": fila_num, "motivo": f"DNI {dni} ya existe"}); continue
             if dni in dnis_en_excel:
-                errores.append({"fila": fila_num, "motivo": f"DNI {dni} duplicado"}); continue
+                errores.append({"fila": fila_num, "motivo": f"DNI {dni} duplicado en Excel"}); continue
             if not nom or not pat or not gra or not sec:
-                errores.append({"fila": fila_num, "motivo": "Campos obligatorios vacios"}); continue
+                errores.append({"fila": fila_num, "motivo": "Campos obligatorios vacíos"}); continue
             if tur in ("mañana", "manana", "m", "am", "mñ"):
                 turno_nombre = "Mañana"
             elif tur in ("tarde", "t", "tm", "pm"):
                 turno_nombre = "Tarde"
             else:
-                errores.append({"fila": fila_num, "motivo": f"Turno invalido '{tur}'"}); continue
+                errores.append({"fila": fila_num, "motivo": f"Turno inválido '{tur}'"}); continue
             dnis_en_excel[dni] = fila_num
             validas.append({"dni": dni, "nombres": nom, "apellido_paterno": pat,
                             "apellido_materno": mat, "grado": gra, "seccion": sec,
@@ -1014,7 +1027,6 @@ def insertar_validas(validas):
         st.session_state["_imp_errores_insert"] = errores
     return insertados
 
-# ===== VISTAS =====
 def vista_login():
     st.title("Sistema de Asistencia - I.E. Yarinacocha")
     st.caption("Ingresa con tu usuario y contraseña")
@@ -1034,7 +1046,6 @@ def vista_login():
             else:
                 st.error("Credenciales incorrectas")
 
-# ===== 7.2 PUERTA =====
 @st.fragment
 def _frag_lista_marcar(usuario, seccion_id):
     df = alumnos_de_seccion(seccion_id)
@@ -1071,36 +1082,29 @@ def _frag_lista_marcar(usuario, seccion_id):
 
 @st.fragment
 def _frag_escaner_qr(usuario):
-    st.caption("Muestra el QR del alumno a la camara")
+    st.caption("Muestra el QR del alumno a la cámara")
     img_file = st.camera_input("Escanea el QR", key="camara_qr_fija")
     if img_file:
         dni = leer_qr(Image.open(BytesIO(img_file.getvalue())))
         if not dni:
-            st.error("No se detecto QR. Prueba con mejor luz o mas cerca.")
+            st.error("No se detectó QR. Prueba con mejor luz o más cerca.")
         else:
-            _procesar_entrada(dni, usuario)
-
-def _procesar_entrada(dni, usuario):
-    ok, tipo, msg, extra = registrar_entrada(dni, usuario)
-    if not ok:
-        st.error(msg)
-        return
-    if tipo == "PUNTUAL":
-        st.success(msg)
-        st.balloons()
-    elif tipo == "REFORZAMIENTO":
-        st.success(msg)
-        st.balloons()
-    elif tipo == "TARDANZA":
-        accion = extra.get("accion")
-        if accion == "PERDONADO":
-            st.warning(msg)
-        elif accion == "DERIVADO_TOECE":
-            st.error(msg)
-            st.info("Derivar al alumno al salon TOECE.")
-        else:
-            st.error(msg)
-            st.info("Retener al alumno hasta que llegue su apoderado.")
+            ok, tipo, msg, extra = registrar_entrada(dni, usuario)
+            if not ok:
+                st.error(msg)
+            elif tipo in ("PUNTUAL", "REFORZAMIENTO"):
+                st.success(msg)
+                st.balloons()
+            elif tipo == "TARDANZA":
+                accion = extra.get("accion")
+                if accion == "PERDONADO":
+                    st.warning(msg)
+                elif accion == "DERIVADO_TOECE":
+                    st.error(msg)
+                    st.info("Derivar al alumno al salón TOECE.")
+                else:
+                    st.error(msg)
+                    st.info("Retener al alumno hasta que llegue su apoderado.")
 
 def vista_puerta():
     st.title("Control de Puerta")
@@ -1117,14 +1121,14 @@ def vista_puerta():
         st.info(f"Feriado / sin clases: {esp['descripcion']} - No se toma asistencia.")
         return
     elif not es_dia_laboral():
-        st.warning("Hoy no es dia laboral. No se toma asistencia.")
+        st.warning("Hoy no es día laboral. No se toma asistencia.")
         return
     else:
-        st.info(f"Dia laboral - {hoy}")
+        st.info(f"Día laboral - {hoy}")
     
     marcar_faltas_al_cierre()
     st.markdown("---")
-    modo = st.radio("Metodo", ["Escanear QR", "Lista por seccion"],
+    modo = st.radio("Método", ["Escanear QR", "Lista por sección"],
                     horizontal=True, key="modo_puerta")
     
     if modo == "Escanear QR":
@@ -1142,21 +1146,123 @@ def vista_puerta():
                 if not secs:
                     st.warning("Ese grado no tiene secciones.")
                 else:
-                    seccion_sel = st.selectbox("Seccion", secs, format_func=lambda s: s["nombre"], key="pt_seccion")
+                    seccion_sel = st.selectbox("Sección", secs, format_func=lambda s: s["nombre"], key="pt_seccion")
                     st.markdown(f"### Alumnos de {grado_sel['nombre']}{seccion_sel['nombre']}")
                     _frag_lista_marcar(usuario, seccion_sel["id"])
 
-# ===== 7.4 TOECE con AUTO-REFRESH =====
+@st.fragment
+def _frag_escaner_reforzamiento(usuario):
+    st.caption("Muestra el QR del alumno a la cámara")
+    img_file = st.camera_input("Escanea el QR", key="camara_qr_reforzamiento")
+    if img_file:
+        dni = leer_qr(Image.open(BytesIO(img_file.getvalue())))
+        if not dni:
+            st.error("No se detectó QR. Prueba con mejor luz o más cerca.")
+        else:
+            ok, tipo, msg, extra = registrar_entrada(dni, usuario)
+            if not ok:
+                st.error(msg)
+            elif tipo == "REFORZAMIENTO":
+                st.success(msg)
+                st.balloons()
+            elif tipo == "PUNTUAL":
+                st.info(msg + " (registrado en clases normales)")
+            elif tipo == "TARDANZA":
+                st.warning(msg + " (registrado en clases normales)")
+
+def vista_escanear_reforzamiento():
+    st.title("🎯 Escanear Reforzamiento")
+    usuario = st.session_state.user
+    hoy = hoy_str()
+    marcar_faltas_al_cierre()
+    
+    conn = get_db()
+    refs_hoy = conn.execute("""
+        SELECT d.id, d.descripcion, d.hora_entrada AS hora_inicio,
+               d.hora_salida_reforzamiento AS hora_fin, d.tolerancia_reforzamiento,
+               d.tipo_reforzamiento,
+               GROUP_CONCAT(DISTINCT g.nombre || s.nombre) AS secciones
+        FROM dias_especiales d
+        LEFT JOIN dias_especiales_secciones ds ON d.id = ds.dia_especial_id
+        LEFT JOIN secciones s ON ds.seccion_id = s.id
+        LEFT JOIN grados g ON s.grado_id = g.id
+        WHERE d.fecha = ? AND d.activo = 1 AND d.tipo = 'evento'
+          AND d.tipo_reforzamiento IS NOT NULL
+        GROUP BY d.id
+    """, (hoy,)).fetchall()
+    conn.close()
+    
+    if not refs_hoy:
+        st.info("Hoy no hay reforzamientos programados.")
+        return
+    
+    st.subheader("Reforzamiento de hoy")
+    for ref in refs_hoy:
+        ref = dict(ref)
+        with st.container(border=True):
+            c1, c2, c3 = st.columns([2, 1, 2])
+            with c1:
+                st.markdown(f"**{ref['descripcion']}**")
+                st.caption(f"Secciones: {ref['secciones']}")
+            with c2:
+                st.markdown(f"**{ref['hora_inicio']} - {ref['hora_fin'] or '?'}**")
+            with c3:
+                st.caption(f"Tolerancia: {ref['tolerancia_reforzamiento']} min")
+    
+    st.markdown("---")
+    st.subheader("Escanear QR")
+    _frag_escaner_reforzamiento(usuario)
+    
+    st.markdown("---")
+    st.subheader("Resumen de hoy")
+    
+    conn = get_db()
+    for ref in refs_hoy:
+        ref = dict(ref)
+        st.markdown(f"**{ref['descripcion']}**")
+        
+        df = pd.read_sql("""
+            SELECT a.dni,
+                   a.apellido_paterno || ' ' || COALESCE(a.apellido_materno,'') AS apellidos,
+                   a.nombres, g.nombre AS grado, s.nombre AS seccion,
+                   ast.hora_reforzamiento AS hora, ast.estado_reforzamiento AS estado
+            FROM reforzamiento_alumnos ra
+            JOIN alumnos a ON ra.alumno_id = a.id
+            JOIN secciones s ON a.seccion_id = s.id
+            JOIN grados g ON s.grado_id = g.id
+            LEFT JOIN asistencias ast ON ast.alumno_id = a.id AND ast.fecha = ?
+            WHERE ra.dia_especial_id = ?
+            ORDER BY a.apellido_paterno, a.apellido_materno, a.nombres
+        """, conn, params=[hoy, ref["id"]])
+        
+        if df.empty:
+            st.info("No hay alumnos asignados a este reforzamiento.")
+            continue
+        
+        df["estado"] = df["estado"].fillna("Sin registrar")
+        cnt = df["estado"].value_counts()
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Asignados", len(df))
+        c2.metric("Puntuales", int(cnt.get("Puntual", 0)))
+        c3.metric("Tardanzas", int(cnt.get("Tardanza", 0)))
+        c4.metric("Faltas", int(cnt.get("Falta", 0)))
+        
+        st.dataframe(
+            df[["apellidos", "nombres", "grado", "seccion", "hora", "estado"]].style.map(
+                color_estado, subset=["estado"]
+            ),
+            width="stretch"
+        )
+    conn.close()
+
 def vista_toece():
     st.title("TOECE - Derivados y Observados")
     usuario = st.session_state.user
     hoy = hoy_str()
     
-    # ===== AUTO-REFRESH cada 30 segundos =====
     if "last_refresh_toece" not in st.session_state:
         st.session_state.last_refresh_toece = time.time()
     
-    # Botón de refresco manual + auto-refresh
     c1, c2 = st.columns([1, 5])
     with c1:
         if st.button("Actualizar", width="stretch", key="refresh_toece"):
@@ -1166,12 +1272,10 @@ def vista_toece():
         segundos_desde = int(time.time() - st.session_state.last_refresh_toece)
         st.caption(f"Auto-refresh cada 30s (hace {segundos_desde}s)")
     
-    # Auto-refresh: si pasaron 30 segundos, recargar
     if time.time() - st.session_state.last_refresh_toece > 30:
         st.session_state.last_refresh_toece = time.time()
         st.rerun()
     
-    # Mensajes persistentes
     if "_msg_acta" in st.session_state:
         st.success(st.session_state["_msg_acta"])
         del st.session_state["_msg_acta"]
@@ -1255,14 +1359,12 @@ def vista_toece():
                     st.cache_data.clear()
                     st.rerun()
 
-# ===== 7.5 PANEL DIRECCION con AUTO-REFRESH =====
 def vista_panel_direccion():
     import plotly.express as px
-    st.title("Panel Direccion")
+    st.title("Panel Dirección")
     hoy = hoy_str()
     marcar_faltas_al_cierre()
     
-    # ===== AUTO-REFRESH cada 30 segundos =====
     if "last_refresh_panel" not in st.session_state:
         st.session_state.last_refresh_panel = time.time()
     
@@ -1281,7 +1383,6 @@ def vista_panel_direccion():
     
     m = metricas_dia(hoy)
     
-    # ===== METRICAS DE CLASES =====
     st.subheader("Asistencia en Clases")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total alumnos", m["total"])
@@ -1293,8 +1394,6 @@ def vista_panel_direccion():
     c2.metric("Retenidos", m["retenidos"])
     
     st.markdown("---")
-    
-    # ===== METRICAS DE REFORZAMIENTO =====
     st.subheader("Asistencia en Reforzamiento")
     c1, c2, c3 = st.columns(3)
     c1.metric("Puntuales", m.get("puntuales_ref", 0))
@@ -1302,10 +1401,8 @@ def vista_panel_direccion():
     c3.metric("Faltas", m.get("faltas_ref", 0))
     
     st.markdown("---")
-    
-    # ===== ALERTAS EN TIEMPO REAL =====
     st.subheader("Alertas en tiempo real")
-    st.caption("Ultimos escaneos de los estudiantes")
+    st.caption("Últimos escaneos de los estudiantes")
     df_ultimos = ultimos_registros(hoy, limite=20)
     if df_ultimos.empty:
         st.info("Sin escaneos registrados hoy.")
@@ -1328,7 +1425,7 @@ def vista_panel_direccion():
         )
     
     st.markdown("---")
-    st.subheader("Asistencia ultimos 7 dias")
+    st.subheader("Asistencia últimos 7 días")
     conn = get_db()
     df7 = pd.read_sql("""
         SELECT fecha,
@@ -1345,9 +1442,8 @@ def vista_panel_direccion():
                      barmode="stack", title="Asistencia diaria")
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("Sin datos de los ultimos 7 dias.")
+        st.info("Sin datos de los últimos 7 días.")
 
-# ===== 7.6 PERFIL ALUMNO =====
 def _mostrar_perfil_completo(dni):
     import plotly.express as px
     
@@ -1357,7 +1453,7 @@ def _mostrar_perfil_completo(dni):
             st.session_state.pop("perfil_dni", None)
             st.rerun()
     with col2:
-        st.caption("Volver a la busqueda")
+        st.caption("Volver a la búsqueda")
     
     st.markdown("---")
     conn = get_db()
@@ -1395,7 +1491,7 @@ def _mostrar_perfil_completo(dni):
     c1.write(f"**Grado:** {al['grado']}{al['seccion']}")
     c2.write(f"**Turno:** {al['turno']}")
     c2.write(f"**Apoderado:** {al['nombre_apoderado'] or '-'}")
-    c3.write(f"**Telefono:** {al['telefono_apoderado'] or '-'}")
+    c3.write(f"**Teléfono:** {al['telefono_apoderado'] or '-'}")
     if not df_obs.empty and any(r["activo"] == 1 for _, r in df_obs.iterrows()):
         c3.error("OBSERVADO")
     
@@ -1448,14 +1544,13 @@ def _mostrar_perfil_completo(dni):
     else:
         df_hist = df_asist[["fecha", "estado", "justificada", "observacion",
                              "hora_reforzamiento", "estado_reforzamiento"]].copy()
-        df_hist.columns = ["Fecha", "Estado clases", "Justificada", "Observacion",
+        df_hist.columns = ["Fecha", "Estado clases", "Justificada", "Observación",
                             "Hora reforz.", "Estado reforz."]
         st.dataframe(df_hist.style.map(color_estado, subset=["Estado clases"]), width="stretch")
     
-    # Admin puede editar la asistencia de hoy
     if st.session_state.user["rol"] == "Admin":
         st.markdown("---")
-        st.subheader("Editar asistencia de hoy (solo Admin)")
+        st.subheader("Editar asistencia de hoy")
         
         if "_msg_edit_asist" in st.session_state:
             st.success(st.session_state["_msg_edit_asist"])
@@ -1476,7 +1571,7 @@ def _mostrar_perfil_completo(dni):
                 estados_posibles = ["(sin cambio)", "Puntual", "Tardanza", "Falta"]
                 idx = estados_posibles.index(asist_hoy["estado"]) if asist_hoy["estado"] in estados_posibles else 0
                 nuevo_estado = st.selectbox("Nuevo estado (clases)", estados_posibles, index=idx)
-                obs_edit = st.text_input("Observacion (clases)", value=asist_hoy["observacion"])
+                obs_edit = st.text_input("Observación (clases)", value=asist_hoy["observacion"])
                 guardar_edit = st.form_submit_button("Guardar cambio clases", type="primary", width="stretch")
             if guardar_edit and nuevo_estado != "(sin cambio)":
                 ok, msg = editar_estado_asistencia(al["id"], nuevo_estado, obs_edit, st.session_state.user)
@@ -1490,7 +1585,7 @@ def _mostrar_perfil_completo(dni):
             st.info("Este alumno no tiene asistencia registrada hoy.")
             with st.form("crear_asist_hoy"):
                 nuevo_estado = st.selectbox("Estado", ["Puntual", "Tardanza", "Falta"])
-                obs_edit = st.text_input("Observacion")
+                obs_edit = st.text_input("Observación")
                 guardar_edit = st.form_submit_button("Crear asistencia", type="primary", width="stretch")
             if guardar_edit:
                 ok, msg = editar_estado_asistencia(al["id"], nuevo_estado, obs_edit, st.session_state.user)
@@ -1501,14 +1596,13 @@ def _mostrar_perfil_completo(dni):
                 else:
                     st.error(msg)
 
-# ===== 7.7 REPORTES Y CONSULTAS =====
 def vista_reportes():
     import plotly.express as px
     st.title("Reportes y Consultas")
     
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        periodo = st.selectbox("Periodo", ["Diario", "Semanal", "Mensual", "Bimestral"], key="rep_periodo")
+        periodo = st.selectbox("Período", ["Diario", "Semanal", "Mensual", "Bimestral"], key="rep_periodo")
     with c2:
         turno_opts = ["Todos"] + [t["nombre"] for t in turnos()]
         turno_sel = st.selectbox("Turno", turno_opts, key="rep_turno")
@@ -1577,7 +1671,6 @@ def _rep_detalle(ini, fin, turno_sel, grado_id, seccion_id, texto, periodo, tipo
         st.warning("Sin datos para los filtros.")
         return
     
-    # Filtrar según tipo de asistencia
     if tipo_asistencia == "Clases normales":
         df = df[df["hora"].notna()]
     elif tipo_asistencia == "Reforzamiento":
@@ -1606,7 +1699,7 @@ def _rep_detalle(ini, fin, turno_sel, grado_id, seccion_id, texto, periodo, tipo
         else:
             cnt = df["estado"].value_counts().reset_index()
         cnt.columns = ["Estado", "Cantidad"]
-        fig = px.pie(cnt, names="Estado", values="Cantidad", title="Distribucion de estados",
+        fig = px.pie(cnt, names="Estado", values="Cantidad", title="Distribución de estados",
                      hole=0.45, color="Estado",
                      color_discrete_map={"Puntual": "#28a745", "Falta": "#dc3545", "Tardanza": "#ffc107"})
         st.plotly_chart(fig, use_container_width=True)
@@ -1616,13 +1709,13 @@ def _rep_detalle(ini, fin, turno_sel, grado_id, seccion_id, texto, periodo, tipo
             por_dia.columns = ["fecha", "estado", "Cantidad"]
         else:
             por_dia = df.groupby(["fecha", "estado"]).size().reset_index(name="Cantidad")
-        fig = px.bar(por_dia, x="fecha", y="Cantidad", color="estado", title="Asistencia por dia",
+        fig = px.bar(por_dia, x="fecha", y="Cantidad", color="estado", title="Asistencia por día",
                      color_discrete_map={"Puntual": "#28a745", "Falta": "#dc3545", "Tardanza": "#ffc107"},
                      barmode="stack")
         st.plotly_chart(fig, use_container_width=True)
     
     st.markdown("---")
-    st.subheader("Resumen por salon")
+    st.subheader("Resumen por salón")
     if tipo_asistencia == "Reforzamiento":
         resumen_salon = df[df["estado_reforzamiento"].notna()].groupby(["grado", "seccion", "turno"]).agg(
             puntuales=("estado_reforzamiento", lambda x: (x == "Puntual").sum()),
@@ -1698,7 +1791,7 @@ def _rep_conteo(ini, fin, turno_sel, grado_id, seccion_id, texto, periodo, tipo_
     conn.close()
     
     if df.empty:
-        st.info("Sin faltas en el periodo seleccionado.")
+        st.info("Sin faltas en el período seleccionado.")
         return
     
     m1, m2, m3 = st.columns(3)
@@ -1713,7 +1806,7 @@ def _rep_conteo(ini, fin, turno_sel, grado_id, seccion_id, texto, periodo, tipo_
         top10["nombre_completo"] = top10["apellidos"] + ", " + top10["nombres"]
         fig = px.bar(top10, x="total_faltas", y="nombre_completo", orientation="h",
                      color="total_faltas", color_continuous_scale="Reds",
-                     title="Top 10 alumnos con mas faltas")
+                     title="Top 10 alumnos con más faltas")
         fig.update_layout(yaxis={"categoryorder": "total ascending"})
         st.plotly_chart(fig, use_container_width=True)
     with col_b:
@@ -1789,70 +1882,74 @@ def _rep_cierre(grado_id, seccion_id, turno_sel):
             st.download_button("Bajar Excel", _df_to_xlsx(df, f"Cierre_{MESES_ES[mes]}_{anio}"),
                                f"cierre_{anio}_{mes:02d}.xlsx")
 
-
-# ===== 7.10 DIAS ESPECIALES =====
 def vista_dias_especiales():
-    st.title("Dias especiales")
+    st.title("Días especiales")
+    
+    if "_msg_dia_esp" in st.session_state:
+        st.success(st.session_state["_msg_dia_esp"])
+        del st.session_state["_msg_dia_esp"]
+    
     tab1, tab2 = st.tabs(["Crear", "Listar / eliminar"])
     
     with tab1:
-        st.markdown("### Crear dia especial")
-        st.caption("Configura feriados, eventos con horario especial o reforzamiento por seccion.")
-        
-        # Mostrar mensaje persistente
-        if "_msg_dia_esp" in st.session_state:
-            st.success(st.session_state["_msg_dia_esp"])
-            del st.session_state["_msg_dia_esp"]
-        
+        st.markdown("### Crear día especial")
+        st.caption("Configura feriados, eventos con horario especial o reforzamiento por sección.")
         _frag_crear_dia_especial()
     
     with tab2:
-        conn = get_db()
-        df = pd.read_sql("""
-            SELECT d.id, d.fecha, d.descripcion, COALESCE(t.nombre,'Ambos') AS turno,
-                   d.hora_entrada, COALESCE(d.tipo,'evento') AS tipo,
-                   COALESCE(d.tipo_reforzamiento, '') AS tipo_ref,
-                   COALESCE(d.hora_salida_reforzamiento, '') AS hora_salida_ref
-            FROM dias_especiales d LEFT JOIN turnos t ON d.turno_id = t.id
-            WHERE d.fecha >= date('now') ORDER BY d.fecha
-        """, conn)
-        df["secciones"] = ""
-        for idx, row in df.iterrows():
-            secs = pd.read_sql("""
-                SELECT s.nombre AS sec_nombre, g.nombre AS gr_nombre
-                FROM dias_especiales_secciones ds
-                JOIN secciones s ON ds.seccion_id = s.id
-                JOIN grados g ON s.grado_id = g.id
-                WHERE ds.dia_especial_id = ?
-            """, conn, params=[row["id"]])
-            if not secs.empty:
-                df.at[idx, "secciones"] = ", ".join([f"{r['gr_nombre']}{r['sec_nombre']}" for _, r in secs.iterrows()])
-        conn.close()
-        if df.empty:
-            st.info("Sin dias especiales programados.")
-        else:
-            st.dataframe(df, width="stretch")
-            op = {f"{r['fecha']} - {r['descripcion']} ({r['turno']}, {r['tipo']})": r["id"]
-                  for _, r in df.iterrows()}
-            sel = st.selectbox("Eliminar", list(op.keys()))
-            if st.button("Eliminar", type="primary"):
-                conn = get_db()
-                conn.execute("DELETE FROM dias_especiales_secciones WHERE dia_especial_id=?", (op[sel],))
-                conn.execute("DELETE FROM dias_especiales WHERE id=?", (op[sel],))
-                conn.commit()
-                conn.close()
-                st.session_state["_msg_dia_esp"] = "Dia especial eliminado."
-                st.cache_data.clear()
-                st.rerun()
+        _frag_listar_dias_especiales()
 
 
 @st.fragment
+def _frag_listar_dias_especiales():
+    conn = get_db()
+    df = pd.read_sql("""
+        SELECT d.id, d.fecha, d.descripcion, COALESCE(t.nombre,'Ambos') AS turno,
+               d.hora_entrada, COALESCE(d.tipo,'evento') AS tipo,
+               COALESCE(d.tipo_reforzamiento, '') AS tipo_ref,
+               COALESCE(d.hora_salida_reforzamiento, '') AS hora_salida_ref
+        FROM dias_especiales d LEFT JOIN turnos t ON d.turno_id = t.id
+        WHERE d.fecha >= date('now') ORDER BY d.fecha
+    """, conn)
+    df["secciones"] = ""
+    for idx, row in df.iterrows():
+        secs = pd.read_sql("""
+            SELECT s.nombre AS sec_nombre, g.nombre AS gr_nombre
+            FROM dias_especiales_secciones ds
+            JOIN secciones s ON ds.seccion_id = s.id
+            JOIN grados g ON s.grado_id = g.id
+            WHERE ds.dia_especial_id = ?
+        """, conn, params=[row["id"]])
+        if not secs.empty:
+            df.at[idx, "secciones"] = ", ".join([f"{r['gr_nombre']}{r['sec_nombre']}" for _, r in secs.iterrows()])
+    conn.close()
+    
+    if df.empty:
+        st.info("Sin días especiales programados.")
+        return
+    
+    st.dataframe(df, width="stretch")
+    
+    op = {f"{r['fecha']} - {r['descripcion']} ({r['turno']}, {r['tipo']})": r["id"]
+          for _, r in df.iterrows()}
+    sel = st.selectbox("Eliminar", list(op.keys()), key="del_dia_esp")
+    if st.button("Eliminar", type="primary", key="btn_del_dia_esp"):
+        conn = get_db()
+        conn.execute("DELETE FROM reforzamiento_alumnos WHERE dia_especial_id=?", (op[sel],))
+        conn.execute("DELETE FROM dias_especiales_secciones WHERE dia_especial_id=?", (op[sel],))
+        conn.execute("DELETE FROM dias_especiales WHERE id=?", (op[sel],))
+        conn.commit()
+        conn.close()
+        st.session_state["_msg_dia_esp"] = "Día especial eliminado."
+        st.cache_data.clear()
+        st.rerun()
+
+
 def _frag_crear_dia_especial():
-    """Formulario de días especiales como fragmento (no bloquea al escribir)."""
-    tipo_dia = st.radio("Tipo de dia especial",
+    tipo_dia = st.radio("Tipo de día especial",
                         ["Feriado (sin clases)",
                          "Evento con horario especial (todo el turno)",
-                         "Reforzamiento por seccion"],
+                         "Reforzamiento por sección"],
                         key="tipo_dia_esp")
     
     if tipo_dia == "Feriado (sin clases)":
@@ -1860,7 +1957,7 @@ def _frag_crear_dia_especial():
             col1, col2 = st.columns(2)
             with col1:
                 f = st.date_input("Fecha", min_value=ahora().date())
-                desc = st.text_input("Descripcion", placeholder="Ej: Dia del Maestro")
+                desc = st.text_input("Descripción", placeholder="Ej: Día del Maestro")
             ok = st.form_submit_button("Crear Feriado", type="primary", width="stretch")
             if ok:
                 conn = get_db()
@@ -1872,7 +1969,7 @@ def _frag_crear_dia_especial():
                     conn.commit()
                     st.session_state["_msg_dia_esp"] = f"Feriado '{desc}' creado."
                     st.cache_data.clear()
-                    st.rerun(scope="fragment")
+                    st.rerun()
                 except Exception as e:
                     st.error(f"Error: {e}")
                 conn.close()
@@ -1882,7 +1979,7 @@ def _frag_crear_dia_especial():
             col1, col2 = st.columns(2)
             with col1:
                 f = st.date_input("Fecha", min_value=ahora().date())
-                desc = st.text_input("Descripcion", placeholder="Ej: Aniversario del colegio")
+                desc = st.text_input("Descripción", placeholder="Ej: Aniversario del colegio")
             with col2:
                 t_opts = {"Ambos turnos": None}
                 t_opts.update({t["nombre"]: t["id"] for t in turnos()})
@@ -1899,58 +1996,56 @@ def _frag_crear_dia_especial():
                     conn.commit()
                     st.session_state["_msg_dia_esp"] = f"Evento '{desc}' creado."
                     st.cache_data.clear()
-                    st.rerun(scope="fragment")
+                    st.rerun()
                 except Exception as e:
                     st.error(f"Error: {e}")
                 conn.close()
     
-    else:  # Reforzamiento
+    else:
         st.markdown("**Configurar reforzamiento:**")
-        st.info("Elige las secciones y configura la hora del reforzamiento. El sistema detectara automaticamente si el escaneo es de reforzamiento o de clases segun la hora.")
+        st.info("Elige las secciones y la ventana de tiempo. Luego, en 'Seleccionar Alumnos "
+                "Reforzamiento', asignas los alumnos. Los asignados que NO escaneen tendrán Falta.")
         
-        solo_secciones = st.checkbox("Aplicar a secciones especificas", value=True, key="solo_sec_chk")
+        st.markdown("**Selecciona las secciones que tienen reforzamiento:**")
+        grados = grados_lista()
         secciones_sel = []
-        if solo_secciones:
-            st.markdown("**Selecciona las secciones que tienen reforzamiento:**")
-            grados = grados_lista()
-            if not grados:
-                st.warning("No hay grados registrados.")
-            else:
-                for gr in grados:
-                    secs = secciones_por_grado(gr["id"])
-                    if secs:
-                        st.markdown(f"**{gr['nombre']}**")
-                        cols = st.columns(min(len(secs), 5))
-                        for i, sec in enumerate(secs):
-                            with cols[i % len(cols)]:
-                                if st.checkbox(f"{gr['nombre']}{sec['nombre']}", key=f"sec_chk_{sec['id']}"):
-                                    secciones_sel.append(sec["id"])
+        if not grados:
+            st.warning("No hay grados registrados.")
+        else:
+            for gr in grados:
+                secs = secciones_por_grado(gr["id"])
+                if secs:
+                    st.markdown(f"**{gr['nombre']}**")
+                    cols = st.columns(min(len(secs), 5))
+                    for i, sec in enumerate(secs):
+                        with cols[i % len(cols)]:
+                            if st.checkbox(f"{gr['nombre']}{sec['nombre']}", key=f"sec_chk_{sec['id']}"):
+                                secciones_sel.append(sec["id"])
         
         with st.form("dia_reforzamiento"):
             col1, col2 = st.columns(2)
             with col1:
                 f = st.date_input("Fecha", min_value=ahora().date())
-                desc = st.text_input("Descripcion", placeholder="Ej: Reforzamiento de matematica", value="Reforzamiento")
+                desc = st.text_input("Descripción", value="Reforzamiento")
             with col2:
                 turno_lbl = st.selectbox("Turno del reforzamiento",
                                         ["Mañana", "Tarde"], key="ref_turno")
                 tipo_ref = st.radio("El reforzamiento es:",
-                                    ["Antes de la entrada normal", "Despues de la salida normal"],
+                                    ["Antes de la entrada normal", "Después de la salida normal"],
                                     key="ref_tipo")
-                h_ref = st.time_input("Hora de inicio del reforzamiento",
-                                     value=datetime.strptime("11:40" if turno_lbl == "Tarde" else "12:20", "%H:%M").time(),
+                h_ref = st.time_input("Hora de inicio",
+                                     value=datetime.strptime("06:00" if "Antes" in st.session_state.get("ref_tipo", "Antes") else "12:20", "%H:%M").time(),
                                      key="ref_hora")
-                h_salida_ref = st.time_input("Hora de fin del reforzamiento",
-                                            value=datetime.strptime("12:20" if turno_lbl == "Tarde" else "14:00", "%H:%M").time(),
+                h_salida_ref = st.time_input("Hora de fin",
+                                            value=datetime.strptime("06:45" if "Antes" in st.session_state.get("ref_tipo", "Antes") else "14:00", "%H:%M").time(),
                                             key="ref_hora_salida")
                 tolerancia_ref = st.number_input("Tolerancia (min)", min_value=0, max_value=60, value=7, key="ref_tol")
             ok = st.form_submit_button("Crear Reforzamiento", type="primary", width="stretch")
             
             if ok:
                 if not secciones_sel:
-                    st.error("Debes seleccionar al menos una seccion.")
+                    st.error("Debes seleccionar al menos una sección.")
                 else:
-                    # ===== VALIDAR DUPLICADOS =====
                     conn_check = get_db()
                     fecha_str = f.strftime("%Y-%m-%d")
                     secciones_duplicadas = []
@@ -1966,8 +2061,7 @@ def _frag_crear_dia_especial():
                         if ya_existe:
                             sec_info = conn_check.execute("""
                                 SELECT g.nombre || s.nombre AS nombre_completo
-                                FROM secciones s
-                                JOIN grados g ON s.grado_id = g.id
+                                FROM secciones s JOIN grados g ON s.grado_id = g.id
                                 WHERE s.id=?
                             """, (sec_id,)).fetchone()
                             if sec_info:
@@ -1976,7 +2070,6 @@ def _frag_crear_dia_especial():
                     
                     if secciones_duplicadas:
                         st.error(f"Ya existe un reforzamiento para esa fecha en: {', '.join(secciones_duplicadas)}")
-                        st.info("Si necesitas modificarlo, primero elimina el reforzamiento existente desde 'Listar / eliminar'.")
                     else:
                         tipo_val = "antes" if "Antes" in tipo_ref else "despues"
                         conn = get_db()
@@ -2000,15 +2093,99 @@ def _frag_crear_dia_especial():
                                                       (dia_especial_id, seccion_id) VALUES (?,?)""",
                                                    (dia_id, sec_id))
                             conn.commit()
-                            st.session_state["_msg_dia_esp"] = f"Reforzamiento creado para {len(secciones_sel)} secciones."
+                            st.session_state["_msg_dia_esp"] = f"Reforzamiento creado para {len(secciones_sel)} secciones. Ahora asigna los alumnos."
                             st.cache_data.clear()
-                            st.rerun(scope="fragment")
+                            st.rerun()
                         except Exception as e:
                             st.error(f"Error: {e}")
                         conn.close()
 
+def vista_seleccionar_alumnos_reforzamiento():
+    st.title("Seleccionar Alumnos para Reforzamiento")
+    
+    if "_msg_ref_alumnos" in st.session_state:
+        st.success(st.session_state["_msg_ref_alumnos"])
+        del st.session_state["_msg_ref_alumnos"]
+    
+    conn = get_db()
+    refs = pd.read_sql("""
+        SELECT d.id, d.fecha, d.descripcion,
+               d.hora_entrada, d.hora_salida_reforzamiento, d.tipo_reforzamiento,
+               GROUP_CONCAT(DISTINCT g.nombre || s.nombre) AS secciones
+        FROM dias_especiales d
+        LEFT JOIN dias_especiales_secciones ds ON d.id = ds.dia_especial_id
+        LEFT JOIN secciones s ON ds.seccion_id = s.id
+        LEFT JOIN grados g ON s.grado_id = g.id
+        WHERE d.fecha >= date('now') AND d.activo = 1
+          AND d.tipo = 'evento' AND d.tipo_reforzamiento IS NOT NULL
+        GROUP BY d.id ORDER BY d.fecha
+    """, conn)
+    conn.close()
+    
+    if refs.empty:
+        st.info("No hay reforzamientos programados. Crea uno primero en Días Especiales.")
+        return
+    
+    opciones = {f"{r['fecha']} - {r['descripcion']} ({r['secciones'] or 'sin secciones'})": r["id"]
+                for _, r in refs.iterrows()}
+    sel = st.selectbox("Selecciona el reforzamiento", list(opciones.keys()))
+    ref_id = opciones[sel]
+    
+    ref_info = refs[refs["id"] == ref_id].iloc[0]
+    st.markdown(f"**Fecha:** {ref_info['fecha']} | "
+                f"**Secciones:** {ref_info['secciones']} | "
+                f"**Hora:** {ref_info['hora_entrada']} - {ref_info['hora_salida_reforzamiento'] or '?'}")
+    
+    st.markdown("---")
+    st.subheader("Seleccionar alumnos")
+    st.caption("Marca los alumnos que van a este reforzamiento. "
+               "Los asignados que NO escaneen tendrán Falta en reforzamiento.")
+    
+    grado_id, seccion_id, texto = filtros_grado_seccion_nombre(
+        key_prefix="ref_sel", placeholder_nombre="Ej: Pérez")
+    
+    if not (grado_id or seccion_id or texto):
+        st.info("Selecciona un grado, sección o escribe un nombre para ver los alumnos.")
+        return
+    
+    conn = get_db()
+    ya_sel = {r["alumno_id"] for r in conn.execute(
+        "SELECT alumno_id FROM reforzamiento_alumnos WHERE dia_especial_id=?", (ref_id,)
+    ).fetchall()}
+    conn.close()
+    
+    df = buscar_alumnos_por_nombre(texto, grado_id, seccion_id, limite=500)
+    if df.empty:
+        st.info("Sin alumnos con esos filtros.")
+        return
+    
+    st.write(f"**{len(df)} alumnos**")
+    
+    with st.form("form_sel_alumnos_ref"):
+        seleccionados = []
+        for _, al in df.iterrows():
+            marcado = al["id"] in ya_sel
+            if st.checkbox(f"{al['nombre_completo']} - {al['grado']}{al['seccion']} ({al['turno']})",
+                           value=marcado, key=f"ref_chk_{al['id']}"):
+                seleccionados.append(al["id"])
+        
+        guardar = st.form_submit_button("Guardar selección", type="primary", width="stretch")
+    
+    if guardar:
+        conn = get_db()
+        try:
+            conn.execute("DELETE FROM reforzamiento_alumnos WHERE dia_especial_id=?", (ref_id,))
+            for al_id in seleccionados:
+                conn.execute("INSERT INTO reforzamiento_alumnos (dia_especial_id, alumno_id) VALUES (?,?)",
+                             (ref_id, al_id))
+            conn.commit()
+            st.session_state["_msg_ref_alumnos"] = f"{len(seleccionados)} alumnos asignados."
+            st.cache_data.clear()
+            st.rerun()
+        except Exception as e:
+            st.error(f"Error: {e}")
+        conn.close()
 
-# ===== 7.11 ALUMNOS =====
 def vista_alumnos():
     st.title("Alumnos")
     
@@ -2033,7 +2210,7 @@ def vista_alumnos():
 
 @st.fragment
 def _frag_importar_excel():
-    st.info("Columnas: DNI, Nombres, Apellido Paterno, Apellido Materno, Grado, Seccion, Turno.")
+    st.info("Columnas: DNI, Nombres, Apellido Paterno, Apellido Materno, Grado, Sección, Turno.")
     
     if "_msg_import" in st.session_state:
         st.success(st.session_state["_msg_import"])
@@ -2053,13 +2230,13 @@ def _frag_importar_excel():
             with c2:
                 m_mat = st.selectbox("Apellido Materno", [""] + cols, key="map_mat")
                 m_gra = st.selectbox("Grado *", cols, key="map_gra")
-                m_sec = st.selectbox("Seccion *", cols, key="map_sec")
+                m_sec = st.selectbox("Sección *", cols, key="map_sec")
                 m_tur = st.selectbox("Turno *", cols, key="map_tur")
             c3, c4 = st.columns(2)
             with c3:
                 m_apo_nom = st.selectbox("Nombre Apoderado", [""] + cols, key="map_apo_nom")
             with c4:
-                m_apo_tel = st.selectbox("Telefono Apoderado", [""] + cols, key="map_apo_tel")
+                m_apo_tel = st.selectbox("Teléfono Apoderado", [""] + cols, key="map_apo_tel")
             validar = st.form_submit_button("Validar", type="primary", width="stretch")
         
         if validar:
@@ -2076,18 +2253,18 @@ def _frag_importar_excel():
             stats = st.session_state["_imp_stats"]
             c1, c2, c3 = st.columns(3)
             c1.metric("Total", stats["total"])
-            c2.metric("Validas", stats["validas"])
+            c2.metric("Válidas", stats["validas"])
             c3.metric("Errores", stats["errores"])
             if st.session_state["_imp_errores"]:
                 with st.expander("Errores"):
                     st.dataframe(pd.DataFrame(st.session_state["_imp_errores"]), width="stretch")
             if st.session_state["_imp_validas"]:
-                if st.button("Importar SOLO validas", type="primary", width="stretch"):
+                if st.button("Importar SOLO válidas", type="primary", width="stretch"):
                     n = insertar_validas(st.session_state["_imp_validas"])
                     st.session_state["_msg_import"] = f"{n} alumnos importados correctamente."
                     for k in ["_imp_validas", "_imp_errores", "_imp_stats"]:
                         st.session_state.pop(k, None)
-                    st.rerun(scope="fragment")
+                    st.rerun()
         
         if "_imp_errores_insert" in st.session_state:
             with st.expander(f"{len(st.session_state['_imp_errores_insert'])} errores al insertar"):
@@ -2119,7 +2296,7 @@ def _frag_listar_alumnos():
 @st.fragment
 def _frag_crear_alumno():
     st.subheader("Crear alumno manualmente")
-    st.caption("Util para alumnos que no aparecen en el Excel del colegio.")
+    st.caption("Útil para alumnos que no aparecen en el Excel del colegio.")
     
     if "_msg_crear_alumno" in st.session_state:
         st.success(st.session_state["_msg_crear_alumno"])
@@ -2133,7 +2310,7 @@ def _frag_crear_alumno():
     with st.form("crear_alumno_form", clear_on_submit=True):
         c1, c2 = st.columns(2)
         with c1:
-            nuevo_dni = st.text_input("DNI * (8 digitos)", max_chars=8)
+            nuevo_dni = st.text_input("DNI * (8 dígitos)", max_chars=8)
             nuevo_nombres = st.text_input("Nombres *")
             nuevo_ap_pat = st.text_input("Apellido Paterno *")
         with c2:
@@ -2142,19 +2319,19 @@ def _frag_crear_alumno():
             secs = secciones_por_grado(grado_sel["id"]) if grado_sel else []
             if not secs:
                 st.warning("Ese grado no tiene secciones.")
-            seccion_sel = st.selectbox("Seccion *", secs, format_func=lambda s: s["nombre"]) if secs else None
+            seccion_sel = st.selectbox("Sección *", secs, format_func=lambda s: s["nombre"]) if secs else None
         c3, c4 = st.columns(2)
         with c3:
             nuevo_apo_nom = st.text_input("Nombre Apoderado (opcional)")
         with c4:
-            nuevo_apo_tel = st.text_input("Telefono Apoderado (opcional)")
+            nuevo_apo_tel = st.text_input("Teléfono Apoderado (opcional)")
         crear = st.form_submit_button("Crear Alumno", type="primary", width="stretch")
     
     if crear:
         if not nuevo_dni or not nuevo_nombres or not nuevo_ap_pat or not seccion_sel:
             st.error("Completa los campos obligatorios (*)")
         elif not re.fullmatch(r"\d{8}", nuevo_dni.strip()):
-            st.error("DNI invalido (debe tener 8 digitos)")
+            st.error("DNI inválido (debe tener 8 dígitos)")
         else:
             conn = get_db()
             try:
@@ -2166,10 +2343,10 @@ def _frag_crear_alumno():
                      nuevo_ap_mat.strip() or None, seccion_sel["id"],
                      nuevo_apo_nom.strip() or None, nuevo_apo_tel.strip() or None))
                 conn.commit()
-                auditar(st.session_state.user["usuario"], f"Creo alumno manual DNI {nuevo_dni}")
+                auditar(st.session_state.user["usuario"], f"Creó alumno manual DNI {nuevo_dni}")
                 st.session_state["_msg_crear_alumno"] = f"Alumno {nuevo_nombres} {nuevo_ap_pat} creado correctamente."
                 st.cache_data.clear()
-                st.rerun(scope="fragment")
+                st.rerun()
             except sqlite3.IntegrityError:
                 st.error("Ese DNI ya existe en el sistema.")
             except Exception as e:
@@ -2180,7 +2357,7 @@ def _frag_crear_alumno():
 
 @st.fragment
 def _frag_editar_alumno():
-    st.caption("Solo se puede editar el apoderado, grado y seccion. El nombre y DNI son inmutables.")
+    st.caption("Solo se puede editar el apoderado, grado y sección. El nombre y DNI son inmutables.")
     
     if "_msg_editar_alumno" in st.session_state:
         st.success(st.session_state["_msg_editar_alumno"])
@@ -2203,9 +2380,9 @@ def _frag_editar_alumno():
             st.info(f"**DNI:** {al['dni']} (no editable)")
             grados = grados_lista()
             
-            if st.button("Cancelar edicion", key="cancelar_edit"):
+            if st.button("Cancelar edición", key="cancelar_edit"):
                 st.session_state.pop("editar_dni", None)
-                st.rerun(scope="fragment")
+                st.rerun()
             
             with st.form("edit_al"):
                 st.text_input("DNI", value=al["dni"], disabled=True)
@@ -2215,7 +2392,7 @@ def _frag_editar_alumno():
                 st.markdown("---")
                 st.markdown("**Campos editables:**")
                 apo_nom = st.text_input("Nombre Apoderado", value=al["nombre_apoderado"] or "")
-                apo_tel = st.text_input("Telefono Apoderado", value=al["telefono_apoderado"] or "")
+                apo_tel = st.text_input("Teléfono Apoderado", value=al["telefono_apoderado"] or "")
                 idx_grado = 0
                 for i, g in enumerate(grados):
                     if g["nombre"] == al["grado"]:
@@ -2228,13 +2405,13 @@ def _frag_editar_alumno():
                     if s["nombre"] == al["seccion"] and s["id"] == al["seccion_id"]:
                         idx_sec = i
                         break
-                seccion_nueva = st.selectbox("Seccion", secs_nuevas, index=idx_sec,
+                seccion_nueva = st.selectbox("Sección", secs_nuevas, index=idx_sec,
                                              format_func=lambda s: s["nombre"]) if secs_nuevas else None
                 guardar = st.form_submit_button("Guardar cambios", type="primary", width="stretch")
             
             if guardar:
                 if not seccion_nueva:
-                    st.error("Debes seleccionar una seccion.")
+                    st.error("Debes seleccionar una sección.")
                 else:
                     conn = get_db()
                     conn.execute("""UPDATE alumnos SET nombre_apoderado=?, telefono_apoderado=?,
@@ -2242,11 +2419,11 @@ def _frag_editar_alumno():
                                  (apo_nom or None, apo_tel or None, seccion_nueva["id"], al["id"]))
                     conn.commit()
                     conn.close()
-                    auditar(st.session_state.user["usuario"], f"Edito alumno {dni_edit}")
+                    auditar(st.session_state.user["usuario"], f"Editó alumno {dni_edit}")
                     st.session_state["_msg_editar_alumno"] = "Alumno actualizado correctamente."
                     st.cache_data.clear()
                     st.session_state.pop("editar_dni", None)
-                    st.rerun(scope="fragment")
+                    st.rerun()
     else:
         grado_id, seccion_id, texto = filtros_grado_seccion_nombre(
             key_prefix="al_edit", placeholder_nombre="Ej: Flores"
@@ -2260,7 +2437,7 @@ def _frag_editar_alumno():
                     if st.button(f"{al['nombre_completo']} - {al['grado']}{al['seccion']}",
                                  key=f"e_{al['id']}", width="stretch"):
                         st.session_state["editar_dni"] = al["dni"]
-                        st.rerun(scope="fragment")
+                        st.rerun()
 
 
 @st.fragment
@@ -2275,24 +2452,25 @@ def _frag_eliminar_alumno():
     eliminar = st.session_state.get("eliminar_alumno")
     if eliminar:
         st.markdown("---")
-        st.error(f"¿Esta seguro que desea eliminar a **{eliminar['nombre']}** (DNI {eliminar['dni']})?")
-        st.warning("Esta accion no se puede deshacer.")
+        st.error(f"¿Está seguro que desea eliminar a **{eliminar['nombre']}** (DNI {eliminar['dni']})?")
+        st.warning("Esta acción no se puede deshacer.")
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("SI, ELIMINAR", type="primary", width="stretch", key="confirm_del"):
+            if st.button("SÍ, ELIMINAR", type="primary", width="stretch", key="confirm_del"):
                 conn = get_db()
                 try:
+                    conn.execute("DELETE FROM reforzamiento_alumnos WHERE alumno_id=?", (eliminar["id"],))
                     conn.execute("DELETE FROM asistencias WHERE alumno_id=?", (eliminar["id"],))
                     conn.execute("DELETE FROM tardanzas WHERE alumno_id=?", (eliminar["id"],))
                     conn.execute("DELETE FROM actas_compromiso WHERE alumno_id=?", (eliminar["id"],))
                     conn.execute("DELETE FROM observados WHERE alumno_id=?", (eliminar["id"],))
                     conn.execute("DELETE FROM alumnos WHERE id=?", (eliminar["id"],))
                     conn.commit()
-                    auditar(st.session_state.user["usuario"], f"Elimino alumno DNI {eliminar['dni']}")
+                    auditar(st.session_state.user["usuario"], f"Eliminó alumno DNI {eliminar['dni']}")
                     st.session_state["_msg_eliminar_alumno"] = "Alumno eliminado correctamente."
                     st.cache_data.clear()
                     st.session_state.pop("eliminar_alumno", None)
-                    st.rerun(scope="fragment")
+                    st.rerun()
                 except Exception as e:
                     st.error(f"Error: {e}")
                 finally:
@@ -2300,7 +2478,7 @@ def _frag_eliminar_alumno():
         with c2:
             if st.button("Cancelar", width="stretch", key="cancel_del"):
                 st.session_state.pop("eliminar_alumno", None)
-                st.rerun(scope="fragment")
+                st.rerun()
     else:
         grado_id, seccion_id, texto = filtros_grado_seccion_nombre(
             key_prefix="al_del", placeholder_nombre="Ej: Rojas"
@@ -2316,13 +2494,13 @@ def _frag_eliminar_alumno():
                         st.session_state["eliminar_alumno"] = {
                             "id": al["id"], "nombre": al["nombre_completo"], "dni": al["dni"]
                         }
-                        st.rerun(scope="fragment")
-# ===== 7.12 CARNETS =====
+                        st.rerun()
+
 def vista_carnets():
     st.title("Carnets")
-    modo = st.radio("Modo", ["Por seccion", "Por alumno"], horizontal=True)
+    modo = st.radio("Modo", ["Por sección", "Por alumno"], horizontal=True)
     
-    if modo == "Por seccion":
+    if modo == "Por sección":
         grados = grados_lista()
         c1, c2 = st.columns(2)
         with c1:
@@ -2332,15 +2510,15 @@ def vista_carnets():
             if not secs:
                 st.warning("Sin secciones.")
             else:
-                seccion_sel = st.selectbox("Seccion", secs, format_func=lambda s: s["nombre"], key="carn_s")
-                if st.button("Generar PDF de la seccion", type="primary"):
+                seccion_sel = st.selectbox("Sección", secs, format_func=lambda s: s["nombre"], key="carn_s")
+                if st.button("Generar PDF de la sección", type="primary"):
                     pdf = pdf_carnets_por_seccion(seccion_sel["id"])
                     if pdf:
                         st.download_button("Descargar", pdf,
                                            f"carnets_{grado_sel['nombre']}{seccion_sel['nombre']}.pdf",
                                            "application/pdf")
     else:
-        st.caption("Busca al alumno que perdio su carnet.")
+        st.caption("Busca al alumno que perdió su carnet.")
         grado_id, seccion_id, texto = filtros_grado_seccion_nombre(
             key_prefix="carn_al", placeholder_nombre="Ej: Vargas"
         )
@@ -2358,49 +2536,58 @@ def vista_carnets():
                                    f"carnet_{st.session_state['carnet_dni']}.pdf",
                                    "application/pdf")
 
-
-# ===== 7.13 USUARIOS =====
 def vista_usuarios():
     st.title("Usuarios")
     tab1, tab2, tab3 = st.tabs(["Listar", "Crear", "Editar / Eliminar"])
     
     with tab1:
-        conn = get_db()
-        df = pd.read_sql("""SELECT u.id, u.usuario, u.rol, u.nombres,
-                                   COALESCE(t.nombre,'-') AS turno, u.activo
-                            FROM usuarios u LEFT JOIN turnos t ON u.turno_asignado = t.id
-                            ORDER BY u.usuario""", conn)
-        conn.close()
-        st.dataframe(df, width="stretch")
-    
+        _frag_listar_usuarios()
     with tab2:
         _frag_crear_usuario()
-    
     with tab3:
         _frag_editar_usuario()
+
+
+@st.fragment
+def _frag_listar_usuarios():
+    if "_msg_crear_user" in st.session_state:
+        st.success(st.session_state["_msg_crear_user"])
+        del st.session_state["_msg_crear_user"]
+    if "_msg_editar_user" in st.session_state:
+        st.success(st.session_state["_msg_editar_user"])
+        del st.session_state["_msg_editar_user"]
+    if "_msg_eliminar_user" in st.session_state:
+        st.success(st.session_state["_msg_eliminar_user"])
+        del st.session_state["_msg_eliminar_user"]
+    
+    conn = get_db()
+    df = pd.read_sql("""SELECT u.id, u.usuario, u.rol, u.nombres,
+                               COALESCE(t.nombre,'-') AS turno, u.activo
+                        FROM usuarios u LEFT JOIN turnos t ON u.turno_asignado = t.id
+                        ORDER BY u.usuario""", conn)
+    conn.close()
+    st.dataframe(df, width="stretch")
 
 
 @st.fragment
 def _frag_crear_usuario():
     st.subheader("Crear nuevo usuario")
     
-    if "_msg_crear_user" in st.session_state:
-        st.success(st.session_state["_msg_crear_user"])
-        del st.session_state["_msg_crear_user"]
-    
     with st.form("nuevo_user", clear_on_submit=True):
         c1, c2 = st.columns(2)
         with c1:
             u = st.text_input("Usuario *")
-            p = st.text_input("Password * (min 6)", type="password")
+            p = st.text_input("Password * (mínimo 6)", type="password")
             n = st.text_input("Nombres *")
         with c2:
-            rol = st.selectbox("Rol", ["Admin", "TOECE", "Auxiliar", "Direccion"])
+            rol = st.selectbox("Rol", ["Admin", "TOECE", "Auxiliar", "Direccion", "Docente Reforzamiento"])
             turno_sel = None
             if rol == "Auxiliar":
                 t_opts = {t["nombre"]: t["id"] for t in turnos()}
                 turno_lbl = st.selectbox("Turno asignado *", list(t_opts.keys()))
                 turno_sel = t_opts[turno_lbl]
+            elif rol == "Docente Reforzamiento":
+                st.info("Este rol solo puede escanear QR en reforzamientos.")
             else:
                 st.info("El turno solo aplica para el rol Auxiliar")
         crear = st.form_submit_button("Crear Usuario", type="primary", width="stretch")
@@ -2417,10 +2604,10 @@ def _frag_crear_usuario():
                                 VALUES (?,?,?,?,?)""",
                              (u, hashlib.sha256(p.encode()).hexdigest(), rol, n, turno_sel))
                 conn.commit()
-                auditar(st.session_state.user["usuario"], f"Creo usuario {u}")
+                auditar(st.session_state.user["usuario"], f"Creó usuario {u} rol {rol}")
                 st.session_state["_msg_crear_user"] = f"Usuario {u} creado como {rol}."
                 st.cache_data.clear()
-                st.rerun(scope="fragment")
+                st.rerun()
             except sqlite3.IntegrityError:
                 st.error("Ese usuario ya existe.")
             except Exception as e:
@@ -2433,13 +2620,6 @@ def _frag_crear_usuario():
 def _frag_editar_usuario():
     st.subheader("Editar o eliminar usuario")
     
-    if "_msg_editar_user" in st.session_state:
-        st.success(st.session_state["_msg_editar_user"])
-        del st.session_state["_msg_editar_user"]
-    if "_msg_eliminar_user" in st.session_state:
-        st.success(st.session_state["_msg_eliminar_user"])
-        del st.session_state["_msg_eliminar_user"]
-    
     conn = get_db()
     usuarios = pd.read_sql("""SELECT u.id, u.usuario, u.rol, u.nombres, u.turno_asignado,
                                      COALESCE(t.nombre,'-') AS turno, u.activo
@@ -2449,7 +2629,7 @@ def _frag_editar_usuario():
     conn.close()
     
     if usuarios.empty:
-        st.info("No hay usuarios para editar (ademas del admin).")
+        st.info("No hay usuarios para editar (además del admin).")
         return
     
     opciones = {f"{r['usuario']} ({r['rol']}) - {r['nombres']}": r["id"] for _, r in usuarios.iterrows()}
@@ -2461,11 +2641,12 @@ def _frag_editar_usuario():
         c1, c2 = st.columns(2)
         with c1:
             edit_usuario = st.text_input("Usuario", value=user_data["usuario"])
-            edit_password = st.text_input("Nueva contrasena (vacio = no cambiar)", type="password")
+            edit_password = st.text_input("Nueva contraseña (vacío = no cambiar)", type="password")
             edit_nombres = st.text_input("Nombres", value=user_data["nombres"])
         with c2:
-            idx_rol = ["Admin", "TOECE", "Auxiliar", "Direccion"].index(user_data["rol"]) if user_data["rol"] in ["Admin", "TOECE", "Auxiliar", "Direccion"] else 0
-            edit_rol = st.selectbox("Rol", ["Admin", "TOECE", "Auxiliar", "Direccion"], index=idx_rol)
+            roles_disp = ["Admin", "TOECE", "Auxiliar", "Direccion", "Docente Reforzamiento"]
+            idx_rol = roles_disp.index(user_data["rol"]) if user_data["rol"] in roles_disp else 0
+            edit_rol = st.selectbox("Rol", roles_disp, index=idx_rol)
             edit_turno_sel = None
             if edit_rol == "Auxiliar":
                 t_opts = {t["nombre"]: t["id"] for t in turnos()}
@@ -2492,10 +2673,10 @@ def _frag_editar_usuario():
                                 WHERE id=?""",
                              (edit_usuario, edit_rol, edit_nombres, edit_turno_sel, user_id))
             conn.commit()
-            auditar(st.session_state.user["usuario"], f"Edito usuario {edit_usuario}")
+            auditar(st.session_state.user["usuario"], f"Editó usuario {edit_usuario}")
             st.session_state["_msg_editar_user"] = "Usuario actualizado."
             st.cache_data.clear()
-            st.rerun(scope="fragment")
+            st.rerun()
         except sqlite3.IntegrityError:
             st.error("Ese nombre de usuario ya existe.")
         except Exception as e:
@@ -2505,55 +2686,58 @@ def _frag_editar_usuario():
     
     if eliminar_user:
         st.warning(f"¿Eliminar al usuario **{user_data['usuario']}**?")
-        if st.button("SI, ELIMINAR", type="primary", width="stretch", key="confirm_del_user"):
+        if st.button("SÍ, ELIMINAR", type="primary", width="stretch", key="confirm_del_user"):
             conn = get_db()
             try:
                 conn.execute("DELETE FROM usuarios WHERE id=?", (user_id,))
                 conn.commit()
-                auditar(st.session_state.user["usuario"], f"Elimino usuario {user_data['usuario']}")
+                auditar(st.session_state.user["usuario"], f"Eliminó usuario {user_data['usuario']}")
                 st.session_state["_msg_eliminar_user"] = "Usuario eliminado."
                 st.cache_data.clear()
-                st.rerun(scope="fragment")
+                st.rerun()
             except Exception as e:
                 st.error(f"Error: {e}")
             finally:
                 conn.close()
 
-
-# ===== 7.14 HORARIOS =====
 def vista_horarios():
     st.title("Horarios de turno")
+    st.caption("La hora de entrada define cuándo se marca Puntual/Tardanza. "
+               "La hora de salida cierra el registro de clases.")
     
     if "_msg_horario" in st.session_state:
         st.success(st.session_state["_msg_horario"])
         del st.session_state["_msg_horario"]
     
-    conn = get_db()
     for t in turnos():
-        st.subheader(f"{t['nombre']}")
-        with st.form(f"hor_{t['id']}"):
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                h_entrada = st.text_input("Hora entrada (HH:MM)", value=t["hora_entrada"])
-            with c2:
-                h_salida = st.text_input("Hora salida (HH:MM)", value=t["hora_salida"] or "17:00")
-            with c3:
-                tol = st.number_input("Tolerancia (min)", min_value=0, max_value=60, value=t["tolerancia_min"])
-            ok = st.form_submit_button("Guardar", type="primary")
-        
-        if ok:
-            conn.execute("UPDATE turnos SET hora_entrada=?, hora_salida=?, tolerancia_min=? WHERE id=?",
-                         (h_entrada, h_salida, tol, t["id"]))
-            conn.commit()
-            st.session_state["_msg_horario"] = f"Horario de {t['nombre']} actualizado."
-            st.cache_data.clear()
-            st.rerun()
-    conn.close()
+        _frag_horario_turno(t)
 
 
-# ===== 7.15 AUDITORIA =====
+@st.fragment
+def _frag_horario_turno(t):
+    st.subheader(f"{t['nombre']}")
+    with st.form(f"hor_{t['id']}"):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            h_entrada = st.text_input("Hora entrada (HH:MM)", value=t["hora_entrada"])
+        with c2:
+            h_salida = st.text_input("Hora salida (HH:MM)", value=t["hora_salida"] or "17:00")
+        with c3:
+            tol = st.number_input("Tolerancia (min)", min_value=0, max_value=60, value=t["tolerancia_min"])
+        ok = st.form_submit_button("Guardar", type="primary")
+    
+    if ok:
+        conn = get_db()
+        conn.execute("UPDATE turnos SET hora_entrada=?, hora_salida=?, tolerancia_min=? WHERE id=?",
+                     (h_entrada, h_salida, tol, t["id"]))
+        conn.commit()
+        conn.close()
+        st.session_state["_msg_horario"] = f"Horario de {t['nombre']} actualizado."
+        st.cache_data.clear()
+        st.rerun()
+
 def vista_auditoria():
-    st.title("Auditoria")
+    st.title("Auditoría")
     st.caption("Se actualiza al instante.")
     
     c1, c2 = st.columns([1, 5])
@@ -2565,17 +2749,15 @@ def vista_auditoria():
     conn = get_db()
     df = pd.read_sql("SELECT * FROM auditoria ORDER BY id DESC LIMIT 200", conn)
     conn.close()
-    st.write(f"**{len(df)} registros** (ultimos 200)")
+    st.write(f"**{len(df)} registros** (últimos 200)")
     st.dataframe(df, width="stretch")
 
-
-# ===== 8. MAIN =====
 def menu_lateral():
     user = st.session_state.user
     rol = user["rol"]
     
     with st.sidebar:
-        st.markdown(f"### 👤 {user['nombres']}")
+        st.markdown(f"###  {user['nombres']}")
         st.caption(f"Rol: **{rol}**")
         if user["turno_asignado"]:
             turno = next((t["nombre"] for t in turnos() if t["id"] == user["turno_asignado"]), "-")
@@ -2583,24 +2765,31 @@ def menu_lateral():
         st.markdown("---")
         
         opciones_por_rol = {
-            "Admin": ["🚪 Puerta", "📋 TOECE", "🏛️ Panel Dirección",
-                      "📊 Reportes y Consultas", "👥 Alumnos", "🪪 Carnets",
-                      "📅 Días especiales", "⏰ Horarios", "👤 Usuarios", "📋 Auditoría"],
-            "TOECE": ["📋 TOECE", "🏛️ Panel Dirección",
-                      "📊 Reportes y Consultas", "👥 Alumnos",
-                      "📅 Días especiales", "⏰ Horarios"],
-            "Auxiliar": ["🚪 Puerta", "👥 Alumnos"],
-            "Direccion": ["🏛️ Panel Dirección", "📊 Reportes y Consultas",
-                          "👥 Alumnos", "📅 Días especiales"],
+            "Admin": ["Puerta", "TOECE", "Panel Dirección",
+                      "Reportes y Consultas", "Alumnos", "Carnets",
+                      "Días especiales", "Seleccionar Alumnos Reforzamiento",
+                      "Horarios", "Usuarios", "Auditoría"],
+            "TOECE": ["TOECE", "Panel Dirección",
+                      "Reportes y Consultas", "Alumnos",
+                      "Días especiales",
+                      "Horarios"],
+            "Auxiliar": ["Puerta", "Reportes y Consultas"],
+            "Direccion": ["Panel Dirección", "Reportes y Consultas",
+                          "Alumnos", "Días especiales"],
+            "Docente Reforzamiento": ["Escanear Reforzamiento"],
         }
         opciones = opciones_por_rol.get(rol, [])
+        
+        if not opciones:
+            st.error(f"Rol desconocido: {rol}")
+            return None
         
         if "menu" not in st.session_state or st.session_state.menu not in opciones:
             st.session_state.menu = opciones[0]
         opcion = st.radio("Menú", opciones, key="menu")
         
         st.markdown("---")
-        if st.button("🚪 Cerrar sesión", width="stretch"):
+        if st.button("Cerrar sesión", width="stretch"):
             auditar(user["usuario"], "Logout")
             for k in list(st.session_state.keys()):
                 del st.session_state[k]
@@ -2614,17 +2803,21 @@ def main():
         vista_login()
         return
     opcion = menu_lateral()
+    if opcion is None:
+        return
     vistas = {
-        "🚪 Puerta":              vista_puerta,
-        "📋 TOECE":               vista_toece,
-        "🏛️ Panel Dirección":    vista_panel_direccion,
-        "📊 Reportes y Consultas": vista_reportes,
-        "👥 Alumnos":             vista_alumnos,
-        "🪪 Carnets":             vista_carnets,
-        "📅 Días especiales":     vista_dias_especiales,
-        "⏰ Horarios":            vista_horarios,
-        "👤 Usuarios":            vista_usuarios,
-        "📋 Auditoría":           vista_auditoria,
+        "Puerta":              vista_puerta,
+        "TOECE":               vista_toece,
+        "Panel Dirección":    vista_panel_direccion,
+        "Reportes y Consultas": vista_reportes,
+        "Alumnos":             vista_alumnos,
+        "Carnets":             vista_carnets,
+        "Días especiales":     vista_dias_especiales,
+        "Seleccionar Alumnos Reforzamiento": vista_seleccionar_alumnos_reforzamiento,
+        "Escanear Reforzamiento": vista_escanear_reforzamiento,
+        "Horarios":            vista_horarios,
+        "Usuarios":            vista_usuarios,
+        "Auditoría":           vista_auditoria,
     }
     vistas.get(opcion, lambda: st.warning("Vista no disponible"))()
 
