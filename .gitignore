@@ -2,7 +2,6 @@
 *.db
 *.db-wal
 *.db-shm
-asistencia.db
 
 # Python
 __pycache__/
@@ -16,7 +15,8 @@ env/
 ENV/
 .venv/
 .env
-secrets.toml
+
+# Streamlit
 .streamlit/secrets.toml
 
 # Sistema operativo
@@ -28,10 +28,6 @@ Thumbs.db
 .idea/
 *.swp
 
-# Streamlit
-.streamlit/
-
 # Backups
 *_backup.py
-a_backup.py
 *.bak
