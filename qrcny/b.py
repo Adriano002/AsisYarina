@@ -3662,8 +3662,8 @@ def _enrutar(opcion):
 
 def main():
     st.set_page_config(
-        page_title="Asistencia I.E. Yarinacocha",
         page_icon="escudo.png",
+        page_title="Asistencia I.E. Yarinacocha",
         layout="wide",
     )
 
