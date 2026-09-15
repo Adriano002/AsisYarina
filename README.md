@@ -302,15 +302,12 @@ Dashboard con indicadores por bimestre.
 
 ## Autor
 
-Nombre completo.
+JUAN ADRIANO DEL AGUILA MANANIYA
 
-Proyecto de Tesis, Nombre de la carrera.
+Proyecto de Tesis.
 
-Nombre de la universidad, año.
-
-Contacto: correo.
+2026
 
 ## Licencia
 
 Este proyecto fue desarrollado con fines académicos para la I.E. Yarinacocha. Todos los derechos reservados.
-
