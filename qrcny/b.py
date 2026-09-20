@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 import qrcode
 import streamlit as st
-from camera_input_live import camera_input_live
+from streamlit_back_camera_input import back_camera_input
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
@@ -1277,13 +1277,13 @@ def mostrar_mensaje_qr(msg):
 
 def escaner_qr_continuo(key="qr_scanner"):
     st.write("Escaneo QR")
-    st.write("Acerca el codigo del alumno a la camara")
+    st.write("Toma una foto del codigo QR del alumno.")
 
-    imagen = camera_input_live(debounce=100, key="cam_" + key)
+    foto = back_camera_input(key="cam_" + key)
 
-    if imagen is not None:
+    if foto is not None:
         try:
-            bytes_data = imagen.getvalue()
+            bytes_data = foto.getvalue()
             cv_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
             if cv_img is not None:
                 detector = cv2.QRCodeDetector()
@@ -1293,13 +1293,15 @@ def escaner_qr_continuo(key="qr_scanner"):
                     match = re.search(r"\b(\d{8})\b", dni_str)
                     if match:
                         dni_final = match.group(1)
-                        ultimo = st.session_state.get("_ultimo_qr_scan", {})
-                        if not (ultimo.get("dni") == dni_final and (time.time() - ultimo.get("ts", 0)) < 3):
-                            st.session_state["_ultimo_qr_scan"] = {"dni": dni_final, "ts": time.time()}
-                            procesar_escaneo(dni_final)
-                            st.rerun()
+                        procesar_escaneo(dni_final)
+                        st.rerun()
+                    else:
+                        st.write("El QR no contiene un DNI valido (8 digitos).")
+                else:
+                    st.write("No se detecto ningun QR en la foto. Intenta de nuevo.")
         except Exception as err:
             log.warning("error leyendo QR: " + str(err))
+            st.write("Error leyendo la foto.")
 
     if "_qr_mensajes" in st.session_state and st.session_state["_qr_mensajes"]:
         st.write("Ultimos escaneos")
