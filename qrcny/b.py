@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 import qrcode
 import streamlit as st
-from camera_input_live import camera_input_live
+from PIL import Image
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
@@ -644,7 +644,7 @@ def crear_justificacion_previa(idal, fecha_obj, tipo, motivo, usuario):
         return True, "Justificacion previa registrada correctamente."
     except sqlite3.IntegrityError: return False, "Ya existe una justificacion previa para ese dia y tipo."
 
-# ---------- ESCANEO QR ----------
+# ---------- ESCANEO QR (MODIFICADO) ----------
 def _procesar_escaneo(dni):
     u = st.session_state.get("user")
     if not u: return
@@ -664,25 +664,47 @@ def _render_mensaje_qr(msg):
         elif acc == ACC_RETENIDO: mensaje += " &rarr; Retener hasta apoderado"; clase = "qr-retenido"
     st.markdown(f'<div class="qr-msg {clase}"><div class="qr-icono">{ic}</div><div class="qr-texto">{mensaje}</div></div>', unsafe_allow_html=True)
 
+
+# NUEVA FUNCION: lee el QR de una imagen (antes tenia camera_input_live)
+def leer_qr(img):
+    try:
+        import cv2
+        arr = np.array(img.convert("RGB"))
+        gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+        detector = cv2.QRCodeDetector()
+        variantes = [gray]
+        for escala in (1.5, 2.0, 3.0):
+            variantes.append(cv2.resize(gray, None, fx=escala, fy=escala, interpolation=cv2.INTER_CUBIC))
+        for base in list(variantes):
+            th = cv2.adaptiveThreshold(base, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 5)
+            variantes.append(th)
+        for base in list(variantes[:4]):
+            _, otsu = cv2.threshold(base, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            variantes.append(otsu)
+        for v in variantes:
+            data, _, _ = detector.detectAndDecode(v)
+            if data:
+                m = re.search(r"\b(\d{8})\b", data)
+                return m.group(1) if m else data.strip()
+    except Exception as e:
+        st.error(f"Error leyendo QR: {e}")
+    return None
+
+
+# CAMBIO: ahora usa st.camera_input en vez de camera_input_live
 def escaner_qr_continuo(key="qr_scanner"):
-    st.markdown('<div class="scan-header"><div class="scan-titulo">Escaneo QR</div><div class="scan-sub">Acerca el codigo del alumno a la camara</div></div>', unsafe_allow_html=True)
-    img = camera_input_live(debounce=100, key=f"cam_{key}")
-    if img is not None:
-        try:
-            cvi = cv2.imdecode(np.frombuffer(img.getvalue(), np.uint8), cv2.IMREAD_COLOR)
-            if cvi is not None:
-                data, _, _ = cv2.QRCodeDetector().detectAndDecode(cvi)
-                if data:
-                    m = re.search(r"\b(\d{8})\b", str(data))
-                    if m:
-                        dni = m.group(1); ult = st.session_state.get("_ultimo_qr_scan", {})
-                        if not (ult.get("dni") == dni and (time.time()-ult.get("ts",0)) < 3):
-                            st.session_state["_ultimo_qr_scan"] = {"dni": dni, "ts": time.time()}
-                            _procesar_escaneo(dni); st.rerun()
-        except Exception as e: log.warning("QR: %s", e)
+    st.markdown('<div class="scan-header"><div class="scan-titulo">Escaneo QR</div><div class="scan-sub">Toma una foto del codigo del alumno</div></div>', unsafe_allow_html=True)
+    img_file = st.camera_input("Escanea el QR", key=f"cam_{key}")
+    if img_file:
+        dni = leer_qr(Image.open(BytesIO(img_file.getvalue())))
+        if not dni:
+            st.error("No se detecto QR. Prueba con mejor luz o mas cerca.")
+        else:
+            _procesar_escaneo(dni)
     if st.session_state.get("_qr_mensajes"):
         st.markdown('<div class="scan-ultimos">Ultimos escaneos</div>', unsafe_allow_html=True)
         for msg in st.session_state["_qr_mensajes"][:5]: _render_mensaje_qr(msg)
+
 
 # ---------- REPORTES ----------
 def metricas_dia(fecha, pid=None):
@@ -958,7 +980,6 @@ def df_a_xlsx_multilhoja(hojas):
     buf.seek(0); return buf.getvalue()
 
 
-
 # ---------- CSS + ESTILOS ----------
 def aplicar_estilos():
     st.markdown("""
@@ -1041,7 +1062,7 @@ def aplicar_estilos():
         letter-spacing: 0.08em; color: #FFFFFF !important;
     }
 
-    /* ---------- BOTONES (GRIS MEDIO - VISIBLES EN CLARO Y OSCURO) ---------- */
+    /* ---------- BOTONES (GRIS MEDIO) ---------- */
     .stButton > button,
     .stFormSubmitButton > button,
     .stDownloadButton > button {
@@ -1069,7 +1090,6 @@ def aplicar_estilos():
         background: #555555 !important;
         border-color: #555555 !important;
     }
-    /* Botones secundarios / descarga: borde gris, fondo transparente */
     .stButton > button[kind="secondary"],
     .stDownloadButton > button {
         background: transparent !important;
