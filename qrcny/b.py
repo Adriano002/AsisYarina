@@ -1,6 +1,3 @@
-# ============================================================
-# ASISTENCIA I.E. YARINACOCHA
-# ============================================================
 import hashlib, logging, os, re, secrets, sqlite3, threading, time
 from calendar import monthrange
 from datetime import date, datetime, timedelta, timezone
@@ -47,7 +44,6 @@ ACC_PERDONADO="PERDONADO"; ACC_DERIVADO="DERIVADO_TOECE"; ACC_RETENIDO="RETENIDO
 ROLES_VALIDOS=("Admin","TOECE","Auxiliar","Direccion")
 VENT_CLASES="clases"; VENT_REF="reforzamiento"
 
-
 def ahora():
     return datetime.now(timezone.utc) - timedelta(hours=5)
 
@@ -68,7 +64,6 @@ def sumar_minutos(hhmm, mins):
 
 def es_fin_de_semana(fecha=None):
     return (fecha or ahora().date()).weekday() >= 5
-
 
 def validar_usuario(usuario):
     if not usuario: return False, "El usuario no puede estar vacio."
@@ -91,7 +86,6 @@ def validar_nombre(nombre):
     if not nombre: return False, "El nombre no puede estar vacio."
     if len(nombre) > 15: return False, "El nombre no puede tener mas de 15 caracteres."
     return True, ""
-
 
 def hashear_password(password):
     salt = secrets.token_bytes(16)
@@ -119,7 +113,6 @@ def verificar_password_admin(password):
         if verificar_password(password, fila["password"]):
             return True
     return False
-
 
 _conexion = None
 _lock = threading.Lock()
@@ -212,7 +205,6 @@ def _seed(cur):
                     ("admin", hashear_password(pwd)))
         log.warning("admin pass: %s", pwd)
 
-
 def _cookie_mgr():
     return stx.CookieManager(key=COOKIE_KEY)
 
@@ -281,7 +273,6 @@ def refrescar_sesion_si_necesario():
         _guardar_cookie(nuevo)
     except Exception as e: log.warning("refresh sesion: %s", e)
 
-
 def _bloqueado(u):
     if not u.get("bloqueado_hasta"): return False
     try: return ahora() < datetime.strptime(u["bloqueado_hasta"], "%Y-%m-%d %H:%M:%S")
@@ -320,7 +311,6 @@ def auditar(usuario, accion, va=None, vn=None, tb=None, rid=None):
                     (usuario, accion, timestamp_str(), va, vn, tb, rid, _ip()))
         con.commit()
     except Exception as e: log.warning("audit: %s", e)
-
 
 def obtener_periodo_activo():
     con = obtener_conexion()
@@ -401,7 +391,6 @@ def ventana_activa_para_alumno(id_turno, fecha, id_seccion=None):
         if ap <= h <= v["hora_cierre"]:
             return {**v, "hora_apertura_efectiva": ap, "hora_limite_efectiva": lim}
     return None
-
 
 def listar_grados():
     con = obtener_conexion()
@@ -726,7 +715,6 @@ def crear_permiso(idal, fecha_obj, motivo, usuario):
     except sqlite3.IntegrityError:
         return False, "Ya existe un permiso para ese dia."
 
-
 def _procesar_escaneo(dni):
     u = st.session_state.get("user")
     if not u: return
@@ -827,7 +815,6 @@ def reporte_conteo_faltas(inicio, fin, turno, idg=None, idsec=None, texto="", id
             pat = f"%{w}%"; p += [pat, pat, pat]
     q += " GROUP BY g.nombre, s.nombre, t.nombre ORDER BY t.nombre, g.nombre, s.nombre"
     return pd.read_sql(q, con, params=p)
-
 
 def _estado_a_letra(estado):
     if estado == "Puntual": return "P"
@@ -2288,6 +2275,5 @@ def main():
     _control_faltas()
     op = menu_lateral()
     if op: _enrutar(op, st.session_state["user"])
-
 if __name__ == "__main__":
     main()
