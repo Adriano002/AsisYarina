@@ -1660,12 +1660,12 @@ def _frag_crear_alumno():
         with c1:
             dni = st.text_input("DNI * (8 digitos)", max_chars=8)
             nom = st.text_input("Nombres *"); pat = st.text_input("Apellido Paterno *")
-       with c2:
+        with c2:
             mat = st.text_input("Apellido Materno")
             g = st.selectbox("Grado *", grados, format_func=lambda x: x["nombre"], key="crear_grado")
             secs = secciones_por_grado(g["id"]) if g else []
             if secs:
-          s = st.selectbox("Seccion *", secs, format_func=lambda x: x["nombre"], key=f"crear_sec_{g['id']}")
+              s = st.selectbox("Seccion *", secs, format_func=lambda x: x["nombre"], key=f"crear_sec_{g['id']}")
           else:
             s = None
             st.warning("Ese grado no tiene secciones.")
