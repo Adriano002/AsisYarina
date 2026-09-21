@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
-from streamlit_back_camera_input import back_camera_input
+from streamlit_qrcode_scanner import qrcode_scanner
 import cv2
 import extra_streamlit_components as stx
 import numpy as np
@@ -692,26 +692,24 @@ def leer_qr(img):
 
 
 def escaner_qr_continuo(key="qr_scanner"):
-    st.markdown('<div class="scan-header"><div class="scan-titulo">Escaneo QR</div><div class="scan-sub">Toca el video para capturar el codigo del alumno</div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="scan-header"><div class="scan-titulo">Escaneo QR</div><div class="scan-sub">Apunta al codigo del alumno</div></div>', unsafe_allow_html=True)
 
-    # Contador para forzar que la cámara se reinicie después de cada escaneo
-    if "_scan_counter" not in st.session_state:
-        st.session_state["_scan_counter"] = 0
+    # Este componente abre la cámara trasera y escanea automáticamente
+    qr_code = qrcode_scanner(key=f"qr_{key}")
 
-    key_actual = f"cam_{key}_{st.session_state['_scan_counter']}"
+    if qr_code:
+        # Extraes el DNI del contenido del QR
+        m = re.search(r"\b(\d{8})\b", str(qr_code))
+        if m:
+            dni = m.group(1)
+            
+            # Evitas procesar el mismo DNI dos veces seguidas (por si el scanner lo lee rápido)
+            ult = st.session_state.get("_ultimo_qr_scan", {})
+            if not (ult.get("dni") == dni and (time.time() - ult.get("ts", 0)) < 3):
+                st.session_state["_ultimo_qr_scan"] = {"dni": dni, "ts": time.time()}
+                _procesar_escaneo(dni)
 
-    img_file = back_camera_input(key=key_actual)
-
-    if img_file:
-        dni = leer_qr(Image.open(img_file))
-        if not dni:
-            st.error("No se detecto QR. Prueba con mejor luz o mas cerca.")
-        else:
-            _procesar_escaneo(dni)
-            # Incrementamos el contador para que la próxima cámara sea "nueva" y esté limpia
-            st.session_state["_scan_counter"] += 1
-            st.rerun()
-
+    # Muestra los últimos escaneos
     if st.session_state.get("_qr_mensajes"):
         st.markdown('<div class="scan-ultimos">Ultimos escaneos</div>', unsafe_allow_html=True)
         for msg in st.session_state["_qr_mensajes"][:5]:
