@@ -3,7 +3,7 @@ pandas
 numpy
 opencv-python-headless
 extra-streamlit-components
-streamlit-back-camera-input
+streamlit-qrcode-scanner
 qrcode
 pillow
 reportlab
