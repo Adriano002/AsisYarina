@@ -1654,38 +1654,54 @@ def vista_reportes():
 def _frag_crear_alumno():
     st.subheader("Crear alumno manualmente")
     grados = listar_grados()
-    if not grados: st.warning("No hay grados."); return
+    if not grados:
+        st.warning("No hay grados.")
+        return
     with st.form("crear_al", clear_on_submit=True):
         c1, c2 = st.columns(2)
         with c1:
             dni = st.text_input("DNI * (8 digitos)", max_chars=8)
-            nom = st.text_input("Nombres *"); pat = st.text_input("Apellido Paterno *")
+            nom = st.text_input("Nombres *")
+            pat = st.text_input("Apellido Paterno *")
         with c2:
             mat = st.text_input("Apellido Materno")
             g = st.selectbox("Grado *", grados, format_func=lambda x: x["nombre"], key="crear_grado")
             secs = secciones_por_grado(g["id"]) if g else []
             if secs:
-              s = st.selectbox("Seccion *", secs, format_func=lambda x: x["nombre"], key=f"crear_sec_{g['id']}")
-          else:
-            s = None
-            st.warning("Ese grado no tiene secciones.")
-        with c3: apo = st.text_input("Apoderado (opcional)")
-        with c4: tel = st.text_input("Telefono (opcional)")
+                s = st.selectbox("Seccion *", secs, format_func=lambda x: x["nombre"], key=f"crear_sec_{g['id']}")
+            else:
+                s = None
+                st.warning("Ese grado no tiene secciones.")
+        c3, c4 = st.columns(2)
+        with c3:
+            apo = st.text_input("Apoderado (opcional)")
+        with c4:
+            tel = st.text_input("Telefono (opcional)")
         pwd_admin = st.text_input("Contrasena de Admin para confirmar *", type="password")
         if st.form_submit_button("Crear", type="primary"):
             if not dni or not nom or not pat:
-                st.error("Completa los campos obligatorios."); return
+                st.error("Completa los campos obligatorios.")
+                return
             if not s:
-                st.error("Debes seleccionar una seccion."); return
+                st.error("Debes seleccionar una seccion.")
+                return
             if not re.fullmatch(r"\d{8}", dni.strip()):
-                st.error("DNI invalido."); return
+                st.error("DNI invalido.")
+                return
             if not pwd_admin:
-                st.error("Ingresa tu contrasena de Admin."); return
+                st.error("Ingresa tu contrasena de Admin.")
+                return
             if not verificar_password_admin(pwd_admin):
-                st.error("Contrasena de Admin incorrecta."); return
-            ok, msg = crear_alumno(dni.strip(), nom.strip(), pat.strip(), mat.strip(), s["id"], apo.strip(), tel.strip(), st.session_state["user"])
-            if ok: st.toast(msg); st.rerun()
-            else: st.error(msg)
+                st.error("Contrasena de Admin incorrecta.")
+                return
+            ok, msg = crear_alumno(dni.strip(), nom.strip(), pat.strip(), mat.strip(),
+                                   s["id"], apo.strip(), tel.strip(),
+                                   st.session_state["user"])
+            if ok:
+                st.toast(msg)
+                st.rerun()
+            else:
+                st.error(msg)
 
 def _frag_editar_alumno():
     st.subheader("Editar alumno")
