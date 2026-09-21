@@ -694,22 +694,28 @@ def leer_qr(img):
 def escaner_qr_continuo(key="qr_scanner"):
     st.markdown('<div class="scan-header"><div class="scan-titulo">Escaneo QR</div><div class="scan-sub">Toca el video para capturar el codigo del alumno</div></div>', unsafe_allow_html=True)
 
-    # Cámara trasera por defecto. Solo se toca el video para tomar la foto.
-    img_file = back_camera_input(key=f"cam_{key}")
+    # Contador para forzar que la cámara se reinicie después de cada escaneo
+    if "_scan_counter" not in st.session_state:
+        st.session_state["_scan_counter"] = 0
+
+    key_actual = f"cam_{key}_{st.session_state['_scan_counter']}"
+
+    img_file = back_camera_input(key=key_actual)
 
     if img_file:
-        # 'img_file' es un objeto tipo file, lo abrimos con PIL
         dni = leer_qr(Image.open(img_file))
         if not dni:
             st.error("No se detecto QR. Prueba con mejor luz o mas cerca.")
         else:
             _procesar_escaneo(dni)
+            # Incrementamos el contador para que la próxima cámara sea "nueva" y esté limpia
+            st.session_state["_scan_counter"] += 1
+            st.rerun()
 
     if st.session_state.get("_qr_mensajes"):
         st.markdown('<div class="scan-ultimos">Ultimos escaneos</div>', unsafe_allow_html=True)
         for msg in st.session_state["_qr_mensajes"][:5]:
             _render_mensaje_qr(msg)
-
 
 # ---------- REPORTES ----------
 def metricas_dia(fecha, pid=None):
