@@ -1,12 +1,11 @@
 # ============================================================
-# ASISTENCIA I.E. YARINACOCHA - Compacto v4.0
+# ASISTENCIA I.E. YARINACOCHA
 # ============================================================
 import hashlib, logging, os, re, secrets, sqlite3, threading, time
 from calendar import monthrange
 from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
-from typing import Optional
 from streamlit_qrcode_scanner import qrcode_scanner
 import cv2
 import extra_streamlit_components as stx
@@ -21,7 +20,6 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import (Image as RLImage, PageBreak, Paragraph,
                                  SimpleDocTemplate, Spacer, Table, TableStyle)
 
-# ---------- LOGS ----------
 LOG_DIR = Path("logs"); LOG_DIR.mkdir(exist_ok=True)
 logging.basicConfig(level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -29,15 +27,13 @@ logging.basicConfig(level=logging.INFO,
               logging.StreamHandler()])
 log = logging.getLogger("asistencia")
 
-# ---------- CONFIG ----------
 DB_PATH = "asistencia.db"
 MESES_ES = ["","Enero","Febrero","Marzo","Abril","Mayo","Junio",
             "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
-C_NARANJA = "#E65100"; C_NARANJA_H = "#BF360C"
-C_VERDE = "#2E7D32"; C_VERDE_H = "#1B5E20"
+C_NARANJA = "#E65100"
 C_VERDE_BG = "#d4edda"; C_VERDE_TX = "#155724"
 C_AMAR_BG = "#fff3cd"; C_AMAR_TX = "#856404"
-C_ROJO_BG = "#f8d7da"; C_ROJO_TX = "#721c24"; C_ROJO_BTN = "#C62828"
+C_ROJO_BG = "#f8d7da"; C_ROJO_TX = "#721c24"
 
 PBK_ITER = 260_000; PBK_ALG = "sha256"
 DIAS_TOKEN = 30
@@ -51,33 +47,40 @@ ACC_PERDONADO="PERDONADO"; ACC_DERIVADO="DERIVADO_TOECE"; ACC_RETENIDO="RETENIDO
 ROLES_VALIDOS=("Admin","TOECE","Auxiliar","Direccion")
 VENT_CLASES="clases"; VENT_REF="reforzamiento"
 
-# ---------- UTILIDADES ----------
-def ahora(): return datetime.now(timezone.utc) - timedelta(hours=5)
-def hoy_str(): return ahora().strftime("%Y-%m-%d")
-def hora_str(): return ahora().strftime("%H:%M:%S")
-def hora_corta(): return ahora().strftime("%H:%M")
-def timestamp_str(): return ahora().strftime("%Y-%m-%d %H:%M:%S")
+
+def ahora():
+    return datetime.now(timezone.utc) - timedelta(hours=5)
+
+def hoy_str():
+    return ahora().strftime("%Y-%m-%d")
+
+def hora_str():
+    return ahora().strftime("%H:%M:%S")
+
+def hora_corta():
+    return ahora().strftime("%H:%M")
+
+def timestamp_str():
+    return ahora().strftime("%Y-%m-%d %H:%M:%S")
+
 def sumar_minutos(hhmm, mins):
-    return (datetime.strptime(hhmm,"%H:%M")+timedelta(minutes=mins)).strftime("%H:%M")
+    return (datetime.strptime(hhmm, "%H:%M") + timedelta(minutes=mins)).strftime("%H:%M")
+
 def es_fin_de_semana(fecha=None):
     return (fecha or ahora().date()).weekday() >= 5
-def nombre_mes(m):
-    return MESES_ES[m] if 1 <= m <= 12 else ""
 
-# ---------- VALIDACIONES ----------
+
 def validar_usuario(usuario):
-    """Usuario: maximo 15 caracteres, sin espacios."""
     if not usuario: return False, "El usuario no puede estar vacio."
     if len(usuario) > 15: return False, "El usuario no puede tener mas de 15 caracteres."
     if " " in usuario: return False, "El usuario no puede tener espacios."
     return True, ""
 
 def validar_password(password):
-    """Password: minimo 6, al menos 1 minuscula, 1 caracter especial, 4 numeros."""
     if not password: return False, "La contrasena no puede estar vacia."
     if len(password) < 6: return False, "La contrasena debe tener al menos 6 caracteres."
     if not re.search(r"[a-z]", password):
-        return False, "La contrasena debe tener al menos una letra minuscula."
+        return False, "La contrasena debe tener al menos una minuscula."
     if not re.search(r"[!@#$%^&*(),.?\":{}|<>_\-+=\[\]\\/;'`~]", password):
         return False, "La contrasena debe tener al menos un caracter especial."
     if len(re.findall(r"\d", password)) < 4:
@@ -85,12 +88,11 @@ def validar_password(password):
     return True, ""
 
 def validar_nombre(nombre):
-    """Nombre: maximo 15 caracteres."""
     if not nombre: return False, "El nombre no puede estar vacio."
     if len(nombre) > 15: return False, "El nombre no puede tener mas de 15 caracteres."
     return True, ""
 
-# ---------- SEGURIDAD ----------
+
 def hashear_password(password):
     salt = secrets.token_bytes(16)
     d = hashlib.pbkdf2_hmac(PBK_ALG, password.encode("utf-8"), salt, PBK_ITER)
@@ -103,20 +105,24 @@ def verificar_password(password, hash_guardado):
             d = hashlib.pbkdf2_hmac(PBK_ALG, password.encode("utf-8"),
                                      bytes.fromhex(salt_hex), int(it))
             return secrets.compare_digest(d.hex(), hash_hex)
-        except (ValueError, TypeError): return False
+        except (ValueError, TypeError):
+            return False
     return secrets.compare_digest(
         hashlib.sha256(password.encode()).hexdigest(), hash_guardado)
 
-def hash_token(t): return hashlib.sha256(t.encode("utf-8")).hexdigest()
+def hash_token(t):
+    return hashlib.sha256(t.encode("utf-8")).hexdigest()
 
 def verificar_password_admin(password):
     con = obtener_conexion()
     for fila in con.execute("SELECT password FROM usuarios WHERE rol='Admin' AND activo=1").fetchall():
-        if verificar_password(password, fila["password"]): return True
+        if verificar_password(password, fila["password"]):
+            return True
     return False
 
-# ---------- BD ----------
-_conexion = None; _lock = threading.Lock()
+
+_conexion = None
+_lock = threading.Lock()
 
 def obtener_conexion():
     global _conexion
@@ -125,7 +131,6 @@ def obtener_conexion():
         _conexion.row_factory = sqlite3.Row
         for p in ("journal_mode=WAL","synchronous=NORMAL","foreign_keys=ON","busy_timeout=30000"):
             _conexion.execute(f"PRAGMA {p}")
-        log.info("SQLite inicializada")
     return _conexion
 
 def existe_columna(cur, tabla, col):
@@ -150,6 +155,7 @@ def inicializar_bd():
     CREATE TABLE IF NOT EXISTS observados(id INTEGER PRIMARY KEY,alumno_id INTEGER NOT NULL,fecha_ingreso TEXT NOT NULL,motivo TEXT,activo INTEGER DEFAULT 1,fecha_salida TEXT,observacion_cierre TEXT,periodo_id INTEGER);
     CREATE TABLE IF NOT EXISTS bloqueos(id INTEGER PRIMARY KEY,alumno_id INTEGER NOT NULL,motivo TEXT,activo INTEGER DEFAULT 1,fecha_inicio TEXT NOT NULL,fecha_fin TEXT,liberado_por TEXT,creado_por TEXT,origen TEXT DEFAULT 'automatico');
     CREATE TABLE IF NOT EXISTS justificaciones_previas(id INTEGER PRIMARY KEY,alumno_id INTEGER NOT NULL,fecha_objetivo TEXT NOT NULL,tipo TEXT NOT NULL CHECK(tipo IN ('Falta','Tardanza')),motivo TEXT,creado_por TEXT,timestamp TEXT NOT NULL,aplicada INTEGER DEFAULT 0,UNIQUE(alumno_id,fecha_objetivo,tipo));
+    CREATE TABLE IF NOT EXISTS permisos(id INTEGER PRIMARY KEY,alumno_id INTEGER NOT NULL,fecha_objetivo TEXT NOT NULL,motivo TEXT,creado_por TEXT,timestamp TEXT NOT NULL,aplicada INTEGER DEFAULT 0,periodo_id INTEGER,UNIQUE(alumno_id,fecha_objetivo));
     CREATE TABLE IF NOT EXISTS dias_especiales(id INTEGER PRIMARY KEY,fecha TEXT NOT NULL,descripcion TEXT,turno_id INTEGER,hora_entrada TEXT,activo INTEGER DEFAULT 1,tipo TEXT DEFAULT 'evento' CHECK(tipo IN ('evento','feriado')),periodo_id INTEGER);
     CREATE TABLE IF NOT EXISTS dias_especiales_secciones(id INTEGER PRIMARY KEY,dia_especial_id INTEGER NOT NULL,seccion_id INTEGER NOT NULL,UNIQUE(dia_especial_id,seccion_id));
     CREATE TABLE IF NOT EXISTS usuarios(id INTEGER PRIMARY KEY,usuario TEXT UNIQUE NOT NULL,password TEXT NOT NULL,rol TEXT NOT NULL CHECK(rol IN ('Admin','TOECE','Auxiliar','Direccion')),nombres TEXT NOT NULL,turno_asignado INTEGER,activo INTEGER DEFAULT 1,intentos_fallidos INTEGER DEFAULT 0,bloqueado_hasta TEXT,debe_cambiar_password INTEGER DEFAULT 0,ultimo_login TEXT,ultimo_ip TEXT);
@@ -160,17 +166,13 @@ def inicializar_bd():
     CREATE INDEX IF NOT EXISTS idx_ast_f ON asistencias(fecha);
     CREATE INDEX IF NOT EXISTS idx_ast_a ON asistencias(alumno_id);
     CREATE INDEX IF NOT EXISTS idx_tard_a ON tardanzas(alumno_id);
-    CREATE INDEX IF NOT EXISTS idx_tard_f ON tardanzas(fecha);
     CREATE INDEX IF NOT EXISTS idx_al_dni ON alumnos(dni);
     CREATE INDEX IF NOT EXISTS idx_al_sec ON alumnos(seccion_id);
-    CREATE INDEX IF NOT EXISTS idx_vent_t ON ventanas(turno_id,tipo);
-    CREATE INDEX IF NOT EXISTS idx_bloq_a ON bloqueos(alumno_id,activo);
     CREATE INDEX IF NOT EXISTS idx_jp_a ON justificaciones_previas(alumno_id,fecha_objetivo);
+    CREATE INDEX IF NOT EXISTS idx_perm_a ON permisos(alumno_id,fecha_objetivo);
     CREATE INDEX IF NOT EXISTS idx_tok ON sesiones_tokens(token);
-    CREATE INDEX IF NOT EXISTS idx_aud_f ON auditoria(fecha);
     """)
     _migrar(cur); _seed(cur); con.commit()
-    log.info("BD inicializada")
 
 def _migrar(cur):
     migs = [("alumnos","activo","ALTER TABLE alumnos ADD COLUMN activo INTEGER DEFAULT 1"),
@@ -208,10 +210,11 @@ def _seed(cur):
         pwd = secrets.token_urlsafe(9)
         cur.execute("INSERT INTO usuarios(usuario,password,rol,nombres,debe_cambiar_password) VALUES(?,?,'Admin','Administrador',1)",
                     ("admin", hashear_password(pwd)))
-        log.warning("Usuario admin creado. Password temporal: %s", pwd)
+        log.warning("admin pass: %s", pwd)
 
-# ---------- SESIÓN ----------
-def _cookie_mgr(): return stx.CookieManager(key=COOKIE_KEY)
+
+def _cookie_mgr():
+    return stx.CookieManager(key=COOKIE_KEY)
 
 def crear_token_sesion(usuario):
     token = secrets.token_urlsafe(32); th = hash_token(token)
@@ -278,7 +281,7 @@ def refrescar_sesion_si_necesario():
         _guardar_cookie(nuevo)
     except Exception as e: log.warning("refresh sesion: %s", e)
 
-# ---------- AUTH ----------
+
 def _bloqueado(u):
     if not u.get("bloqueado_hasta"): return False
     try: return ahora() < datetime.strptime(u["bloqueado_hasta"], "%Y-%m-%d %H:%M:%S")
@@ -318,7 +321,7 @@ def auditar(usuario, accion, va=None, vn=None, tb=None, rid=None):
         con.commit()
     except Exception as e: log.warning("audit: %s", e)
 
-# ---------- PERIODOS ----------
+
 def obtener_periodo_activo():
     con = obtener_conexion()
     f = con.execute("SELECT * FROM periodos WHERE activo=1 LIMIT 1").fetchone()
@@ -359,7 +362,7 @@ def activar_periodo(idp, usuario):
     auditar(usuario["usuario"], f"Activo periodo id={idp}", tb="periodos", rid=idp)
     return True, "Periodo activado correctamente."
 
-# ---------- VENTANAS ----------
+
 def listar_turnos():
     con = obtener_conexion()
     return [dict(f) for f in con.execute("SELECT * FROM turnos ORDER BY id").fetchall()]
@@ -372,14 +375,15 @@ def listar_ventanas(id_turno=None):
 
 def dia_especial_hoy(id_turno, fecha, id_seccion=None):
     con = obtener_conexion()
-    f = con.execute("SELECT * FROM dias_especiales WHERE fecha=? AND activo=1 AND (turno_id=? OR turno_id IS NULL) ORDER BY turno_id DESC LIMIT 1",
-                    (fecha, id_turno)).fetchone()
-    if not f: return None
-    dia = dict(f)
-    if id_seccion:
+    filas = con.execute("SELECT * FROM dias_especiales WHERE fecha=? AND activo=1 AND (turno_id=? OR turno_id IS NULL) ORDER BY turno_id DESC",
+                        (fecha, id_turno)).fetchall()
+    for f in filas:
+        dia = dict(f)
+        if not id_seccion: return dia
         secs = con.execute("SELECT seccion_id FROM dias_especiales_secciones WHERE dia_especial_id=?", (dia["id"],)).fetchall()
-        if secs and id_seccion not in [s["seccion_id"] for s in secs]: return None
-    return dia
+        if not secs: return dia
+        if id_seccion in [s["seccion_id"] for s in secs]: return dia
+    return None
 
 def ventana_activa_para_alumno(id_turno, fecha, id_seccion=None):
     dia = dia_especial_hoy(id_turno, fecha, id_seccion)
@@ -398,7 +402,7 @@ def ventana_activa_para_alumno(id_turno, fecha, id_seccion=None):
             return {**v, "hora_apertura_efectiva": ap, "hora_limite_efectiva": lim}
     return None
 
-# ---------- ALUMNOS ----------
+
 def listar_grados():
     con = obtener_conexion()
     return [dict(f) for f in con.execute("SELECT * FROM grados ORDER BY nombre").fetchall()]
@@ -484,7 +488,7 @@ def reactivar_alumno(idal, dni, usuario):
     auditar(usuario["usuario"], f"Reactivo alumno DNI {dni}", tb="alumnos", rid=idal)
     return True, "Alumno reactivado correctamente."
 
-# ---------- IMPORT EXCEL ----------
+
 def _normalizar_grado(n):
     n = (n or "").strip().title()
     r = {"1°":"1ro","2°":"2do","3°":"3ro","4°":"4to","5°":"5to",
@@ -554,7 +558,7 @@ def insertar_alumnos_validos(val):
     con.commit()
     return ins, reac, errs
 
-# ---------- BLOQUEOS ----------
+
 def alumno_bloqueado(idal):
     con = obtener_conexion()
     f = con.execute("SELECT * FROM bloqueos WHERE alumno_id=? AND activo=1 ORDER BY id DESC LIMIT 1", (idal,)).fetchone()
@@ -572,7 +576,7 @@ def liberar_bloqueo(idal, usuario, obs=""):
                 (timestamp_str(), usuario["usuario"], idal)); con.commit()
     auditar(usuario["usuario"], f"Libero bloqueo alumno_id={idal}. Obs: {obs}", tb="bloqueos", rid=idal)
 
-# ---------- ASISTENCIA ----------
+
 def contar_tardanzas_injustificadas(idal, pid=None):
     con = obtener_conexion()
     q = "SELECT COUNT(*) FROM tardanzas WHERE alumno_id=? AND justificada=0"; p = [idal]
@@ -580,13 +584,19 @@ def contar_tardanzas_injustificadas(idal, pid=None):
     r = con.execute(q, p).fetchone()
     return r[0] or 0
 
-def _aplicar_just_prev(con, idal, fecha, tipo):
-    f = con.execute("""SELECT id FROM justificaciones_previas
-                       WHERE alumno_id = ? AND fecha_objetivo = ?
-                       AND aplicada = 0 LIMIT 1""",
+def _aplicar_just_prev(con, idal, fecha):
+    f = con.execute("SELECT id FROM justificaciones_previas WHERE alumno_id=? AND fecha_objetivo=? AND aplicada=0 LIMIT 1",
                     (idal, fecha)).fetchone()
     if f:
-        con.execute("UPDATE justificaciones_previas SET aplicada = 1 WHERE id = ?", (f["id"],))
+        con.execute("UPDATE justificaciones_previas SET aplicada=1 WHERE id=?", (f["id"],))
+        return True
+    return False
+
+def _aplicar_permiso(con, idal, fecha):
+    f = con.execute("SELECT id FROM permisos WHERE alumno_id=? AND fecha_objetivo=? AND aplicada=0 LIMIT 1",
+                    (idal, fecha)).fetchone()
+    if f:
+        con.execute("UPDATE permisos SET aplicada=1 WHERE id=?", (f["id"],))
         return True
     return False
 
@@ -627,9 +637,11 @@ def registrar_entrada(dni, usuario):
         if ya: return False, "ERROR", f"{_nombre_completo(al)} ya tiene clases registradas hoy ({ya['estado']} {ya['hora']}).", {}
     lim = v["hora_limite_efectiva"]
     est = PUNTUAL if ha <= lim else TARDANZA
-    jp = _aplicar_just_prev(con, al["id"], fecha, "Falta") or _aplicar_just_prev(con, al["id"], fecha, "Tardanza")
+    jp = _aplicar_just_prev(con, al["id"], fecha)
+    pm = _aplicar_permiso(con, al["id"], fecha)
+    just = 1 if (jp or pm) else 0
     con.execute("INSERT INTO asistencias(alumno_id,fecha,ventana_id,tipo,hora,estado,justificada,periodo_id) VALUES(?,?,?,'clases',?,?,?,?)",
-                (al["id"], fecha, v["id"], hc, est, 1 if jp else 0, pid))
+                (al["id"], fecha, v["id"], hc, est, just, pid))
     if est == TARDANZA:
         n = contar_tardanzas_injustificadas(al["id"], pid) + 1
         acc = ACC_PERDONADO if n <= 2 else (ACC_DERIVADO if n == 3 else ACC_RETENIDO)
@@ -657,13 +669,11 @@ def marcar_faltas_al_cierre():
             est = "Falta" if v["tipo"] == VENT_CLASES else "No asistio"
             for al in con.execute("SELECT a.id FROM alumnos a JOIN secciones s ON a.seccion_id=s.id WHERE s.turno_id=? AND a.activo=1", (t["id"],)).fetchall():
                 if not con.execute("SELECT id FROM asistencias WHERE alumno_id=? AND fecha=? AND tipo=?", (al["id"], fecha, tipo)).fetchone():
-                    jp = False
-                    just_prev = con.execute("SELECT id FROM justificaciones_previas WHERE alumno_id=? AND fecha_objetivo=? AND aplicada=0 LIMIT 1", (al["id"], fecha)).fetchone()
-                    if just_prev:
-                        con.execute("UPDATE justificaciones_previas SET aplicada=1 WHERE id=?", (just_prev["id"],))
-                        jp = True
+                    jp = _aplicar_just_prev(con, al["id"], fecha)
+                    pm = _aplicar_permiso(con, al["id"], fecha)
+                    just = 1 if (jp or pm) else 0
                     con.execute("INSERT INTO asistencias(alumno_id,fecha,ventana_id,tipo,hora,estado,justificada,periodo_id) VALUES(?,?,?,?,?,?,?,?)",
-                                (al["id"], fecha, v["id"], tipo, hora_str(), est, 1 if jp else 0, pid))
+                                (al["id"], fecha, v["id"], tipo, hora_str(), est, just, pid))
     con.commit()
 
 def justificar_asistencia(ida, just, obs, usuario):
@@ -677,27 +687,46 @@ def crear_justificacion_previa(idal, fecha_obj, tipo, motivo, usuario):
     con = obtener_conexion()
     hoy_dt = ahora().date()
     fecha_obj_dt = datetime.strptime(fecha_obj, "%Y-%m-%d").date()
-    diferencia_dias = (fecha_obj_dt - hoy_dt).days
-    if diferencia_dias > 2:
-        return False, "Solo se puede justificar con un maximo de 48 horas de anticipacion."
-    if diferencia_dias < -1:
-        return False, "Solo se puede justificar hasta 24 horas despues del dia."
-    if diferencia_dias == 0:
-        al = con.execute("""SELECT a.id, s.turno_id, a.seccion_id FROM alumnos a
-                            JOIN secciones s ON a.seccion_id = s.id WHERE a.id = ?""", (idal,)).fetchone()
-        if not al:
-            return False, "Alumno no encontrado."
+    dif = (fecha_obj_dt - hoy_dt).days
+    if dif > 2: return False, "Solo se puede justificar con un maximo de 48 horas de anticipacion."
+    if dif < -1: return False, "Solo se puede justificar hasta 24 horas despues del dia."
+    if dif == 0:
+        al = con.execute("SELECT a.id, s.turno_id, a.seccion_id FROM alumnos a JOIN secciones s ON a.seccion_id=s.id WHERE a.id=?", (idal,)).fetchone()
+        if not al: return False, "Alumno no encontrado."
         ventana = ventana_activa_para_alumno(al["turno_id"], fecha_obj, al["seccion_id"])
         if not ventana:
-            return False, ("Si justificas para HOY, debe ser dentro de la ventana de clases.")
+            return False, "Si justificas para HOY, debe ser dentro de la ventana de clases."
     try:
         con.execute("INSERT INTO justificaciones_previas(alumno_id,fecha_objetivo,tipo,motivo,creado_por,timestamp) VALUES(?,?,?,?,?,?)",
                     (idal, fecha_obj, tipo, motivo, usuario["usuario"], timestamp_str())); con.commit()
         auditar(usuario["usuario"], f"Justif. {tipo} {fecha_obj} id={idal}", tb="justificaciones_previas", rid=idal)
         return True, "Justificacion registrada correctamente."
-    except sqlite3.IntegrityError: return False, "Ya existe una justificacion para ese dia y tipo."
+    except sqlite3.IntegrityError:
+        return False, "Ya existe una justificacion para ese dia y tipo."
 
-# ---------- ESCANEO QR ----------
+def crear_permiso(idal, fecha_obj, motivo, usuario):
+    con = obtener_conexion()
+    hoy_dt = ahora().date()
+    fecha_obj_dt = datetime.strptime(fecha_obj, "%Y-%m-%d").date()
+    dif = (fecha_obj_dt - hoy_dt).days
+    if dif > 2: return False, "Solo se puede registrar un permiso con un maximo de 48 horas de anticipacion."
+    if dif < -1: return False, "Solo se puede registrar un permiso hasta 24 horas despues del dia."
+    if dif == 0:
+        al = con.execute("SELECT a.id, s.turno_id, a.seccion_id FROM alumnos a JOIN secciones s ON a.seccion_id=s.id WHERE a.id=?", (idal,)).fetchone()
+        if not al: return False, "Alumno no encontrado."
+        ventana = ventana_activa_para_alumno(al["turno_id"], fecha_obj, al["seccion_id"])
+        if not ventana:
+            return False, "Si registras un permiso para HOY, debe ser dentro de la ventana de clases."
+    per = obtener_periodo_activo(); pid = per["id"] if per else None
+    try:
+        con.execute("INSERT INTO permisos(alumno_id,fecha_objetivo,motivo,creado_por,timestamp,periodo_id) VALUES(?,?,?,?,?,?)",
+                    (idal, fecha_obj, motivo, usuario["usuario"], timestamp_str(), pid)); con.commit()
+        auditar(usuario["usuario"], f"Permiso {fecha_obj} id={idal}", tb="permisos", rid=idal)
+        return True, "Permiso registrado correctamente."
+    except sqlite3.IntegrityError:
+        return False, "Ya existe un permiso para ese dia."
+
+
 def _procesar_escaneo(dni):
     u = st.session_state.get("user")
     if not u: return
@@ -733,7 +762,7 @@ def escaner_qr_continuo(key="qr_scanner"):
         for msg in st.session_state["_qr_mensajes"][:5]:
             _render_mensaje_qr(msg)
 
-# ---------- REPORTES ----------
+  # ---------- REPORTES ----------
 def metricas_dia(fecha, pid=None):
     if pid is None:
         p = obtener_periodo_activo(); pid = p["id"] if p else None
@@ -799,6 +828,69 @@ def reporte_conteo_faltas(inicio, fin, turno, idg=None, idsec=None, texto="", id
     q += " GROUP BY g.nombre, s.nombre, t.nombre ORDER BY t.nombre, g.nombre, s.nombre"
     return pd.read_sql(q, con, params=p)
 
+
+def _estado_a_letra(estado):
+    if estado == "Puntual": return "P"
+    if estado == "Falta": return "F"
+    if estado == "Tardanza": return "T"
+    if estado == "Asistio": return "P"
+    if estado == "No asistio": return "F"
+    return "?"
+
+def _matriz_asistencia(inicio, fin, turno, ids_sec, pid, tipo_asist):
+    con = obtener_conexion()
+    q = ("SELECT a.id, a.apellido_paterno, a.apellido_materno, a.nombres, "
+         "g.nombre AS grado, s.nombre AS seccion, t.nombre AS turno, "
+         "ast.fecha, ast.estado "
+         "FROM asistencias ast JOIN alumnos a ON ast.alumno_id=a.id "
+         "JOIN secciones s ON a.seccion_id=s.id "
+         "JOIN grados g ON s.grado_id=g.id JOIN turnos t ON s.turno_id=t.id "
+         "WHERE ast.fecha BETWEEN ? AND ?")
+    p = [inicio.strftime("%Y-%m-%d"), fin.strftime("%Y-%m-%d")]
+    if tipo_asist != "todas": q += " AND ast.tipo=?"; p.append(tipo_asist)
+    if turno != "Todos": q += " AND t.nombre=?"; p.append(turno)
+    if ids_sec:
+        q += " AND s.id IN (" + ",".join(["?"]*len(ids_sec)) + ")"; p += ids_sec
+    if pid is not None: q += " AND ast.periodo_id=?"; p.append(pid)
+    q += " ORDER BY t.nombre, g.nombre, s.nombre, a.apellido_paterno"
+    return pd.read_sql(q, con, params=p)
+
+def reporte_diario(desde, hasta, turno, ids_sec, pid, tipo_asist):
+    df = _matriz_asistencia(desde, hasta, turno, ids_sec, pid, tipo_asist)
+    if df.empty: return pd.DataFrame()
+    df["letra"] = df["estado"].apply(_estado_a_letra)
+    pivot = df.pivot_table(
+        index=["apellido_paterno", "apellido_materno", "nombres", "grado", "seccion", "turno"],
+        columns="fecha", values="letra", aggfunc="first"
+    ).reset_index()
+    pivot.columns.name = None
+    return pivot
+
+def reporte_mensual(desde, hasta, turno, ids_sec, pid, tipo_asist):
+    df = _matriz_asistencia(desde, hasta, turno, ids_sec, pid, tipo_asist)
+    if df.empty: return pd.DataFrame()
+    df["letra"] = df["estado"].apply(_estado_a_letra)
+    resumen = df.groupby(["apellido_paterno", "apellido_materno", "nombres", "grado", "seccion", "turno"])["letra"].apply(
+        lambda x: " ".join(sorted(x))
+    ).reset_index()
+    resumen.columns = ["Apellido Paterno", "Apellido Materno", "Nombres", "Grado", "Seccion", "Turno", "Asistencia"]
+    return resumen
+
+def reporte_bimestral(desde, hasta, turno, ids_sec, pid, tipo_asist):
+    df = _matriz_asistencia(desde, hasta, turno, ids_sec, pid, tipo_asist)
+    if df.empty: return pd.DataFrame()
+    df["letra"] = df["estado"].apply(_estado_a_letra)
+    resumen = df.groupby(["apellido_paterno", "apellido_materno", "nombres", "grado", "seccion", "turno", "letra"]).size().unstack(fill_value=0).reset_index()
+    resumen.columns.name = None
+    for col in ["P", "F", "T"]:
+        if col not in resumen.columns:
+            resumen[col] = 0
+    resumen = resumen.rename(columns={"apellido_paterno": "Apellido Paterno", "apellido_materno": "Apellido Materno",
+                                        "nombres": "Nombres", "grado": "Grado", "seccion": "Seccion",
+                                        "turno": "Turno", "P": "Puntuales", "F": "Faltas", "T": "Tardanzas"})
+    return resumen[["Apellido Paterno", "Apellido Materno", "Nombres", "Grado", "Seccion", "Turno", "Puntuales", "Faltas", "Tardanzas"]]
+
+
 def casos_toece(pid=None):
     con = obtener_conexion()
     filt = ""; p = []
@@ -830,11 +922,24 @@ def listar_bloqueados():
     return pd.read_sql("SELECT b.id,a.id AS alumno_id,a.dni,a.apellido_paterno||' '||COALESCE(a.apellido_materno,'')||', '||a.nombres AS alumno,g.nombre AS grado,s.nombre AS seccion,t.nombre AS turno,b.motivo,b.fecha_inicio,COALESCE(b.origen,'automatico') AS origen FROM bloqueos b JOIN alumnos a ON b.alumno_id=a.id JOIN secciones s ON a.seccion_id=s.id JOIN grados g ON s.grado_id=g.id JOIN turnos t ON s.turno_id=t.id WHERE b.activo=1 ORDER BY b.fecha_inicio DESC",
                        obtener_conexion())
 
+def listar_permisos(solo_activos=True):
+    con = obtener_conexion()
+    q = ("SELECT p.id, a.id AS alumno_id, a.dni, "
+         "a.apellido_paterno||' '||COALESCE(a.apellido_materno,'')||', '||a.nombres AS alumno, "
+         "g.nombre AS grado, s.nombre AS seccion, t.nombre AS turno, "
+         "p.fecha_objetivo, COALESCE(p.motivo,'') AS motivo, p.aplicada, p.timestamp "
+         "FROM permisos p JOIN alumnos a ON p.alumno_id=a.id "
+         "JOIN secciones s ON a.seccion_id=s.id "
+         "JOIN grados g ON s.grado_id=g.id JOIN turnos t ON s.turno_id=t.id")
+    if solo_activos: q += " WHERE p.aplicada=0"
+    q += " ORDER BY p.fecha_objetivo DESC"
+    return pd.read_sql(q, con)
+
 def obtener_auditoria(limite=500):
     return pd.read_sql(f"SELECT id,usuario,accion,fecha,ip FROM auditoria ORDER BY id DESC LIMIT {int(limite)}",
                        obtener_conexion())
 
-# ---------- PERFIL ----------
+
 def perfil_alumno_datos(idal):
     con = obtener_conexion()
     a = con.execute("SELECT a.*,g.nombre AS grado,s.nombre AS seccion,t.nombre AS turno,s.id AS seccion_id,t.id AS turno_id FROM alumnos a JOIN secciones s ON a.seccion_id=s.id JOIN grados g ON s.grado_id=g.id JOIN turnos t ON s.turno_id=t.id WHERE a.id=?",
@@ -847,17 +952,18 @@ def perfil_alumno_datos(idal):
     dac = pd.read_sql("SELECT fecha,COALESCE(motivo,'') AS motivo,COALESCE(observacion,'') AS observacion,COALESCE(registrado_por,'') AS registrado_por FROM actas_compromiso WHERE alumno_id=? ORDER BY fecha DESC", con, params=[idal])
     db = pd.read_sql("SELECT fecha_inicio,COALESCE(fecha_fin,'-') AS fecha_fin,COALESCE(motivo,'') AS motivo,activo FROM bloqueos WHERE alumno_id=? ORDER BY fecha_inicio DESC", con, params=[idal])
     dj = pd.read_sql("SELECT fecha_objetivo,tipo,COALESCE(motivo,'') AS motivo,aplicada,timestamp FROM justificaciones_previas WHERE alumno_id=? ORDER BY fecha_objetivo DESC", con, params=[idal])
+    dp = pd.read_sql("SELECT fecha_objetivo,COALESCE(motivo,'') AS motivo,aplicada,timestamp FROM permisos WHERE alumno_id=? ORDER BY fecha_objetivo DESC", con, params=[idal])
     tp = int((da["estado"] == PUNTUAL).sum()) if not da.empty else 0
     tf = int((da["estado"] == FALTA).sum()) if not da.empty else 0
     tt = int((da["estado"] == TARDANZA).sum()) if not da.empty else 0
     tr = int(((da["tipo"] == "reforzamiento") & (da["estado"] == REF_ASISTIO)).sum()) if not da.empty else 0
     return {"alumno": a, "asistencias": da, "tardanzas": dt, "observados": do, "actas": dac,
-            "bloqueos": db, "just_previas": dj, "total_puntuales": tp, "total_faltas": tf,
+            "bloqueos": db, "just_previas": dj, "permisos": dp, "total_puntuales": tp, "total_faltas": tf,
             "total_tardanzas": tt, "total_ref_asistio": tr,
             "tard_injust": contar_tardanzas_injustificadas(idal),
             "bloqueado": alumno_bloqueado(idal) is not None}
 
-# ---------- CIERRE ANUAL ----------
+
 def reporte_cierre_anual(pid):
     return pd.read_sql("""
         SELECT g.nombre AS grado,s.nombre AS seccion,t.nombre AS turno,COUNT(DISTINCT a.id) AS total_alumnos,
@@ -913,7 +1019,7 @@ def listar_cierres_anuales():
     return pd.read_sql("SELECT c.id,p.nombre AS periodo,c.fecha_cierre,c.generado_por FROM cierres_anuales c JOIN periodos p ON c.periodo_id=p.id ORDER BY c.id DESC",
                        obtener_conexion())
 
-# ---------- PDF / EXCEL / QR ----------
+
 def _pdf_base(titulo, subtitulo=None, paisaje=False):
     buf = BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=(A4[1],A4[0]) if paisaje else A4, rightMargin=25, leftMargin=25, topMargin=25, bottomMargin=25)
@@ -958,7 +1064,6 @@ def _render_carnets(filas, titulo=None):
                 qb = BytesIO(); generar_qr(a["dni"]).save(qb, format="PNG"); qb.seek(0)
                 fila.append([Paragraph(f"<b><font size=11>{a['apellido_paterno']} {a['apellido_materno'] or ''}</font></b>", est["Normal"]),
                              Paragraph(f"<font size=10>{a['nombres']}</font>", est["Normal"]),
-                             Paragraph(f"<font size=10>DNI: {a['dni']}</font>", est["Normal"]),
                              Paragraph(f"<font size=9>{a['grado']} {a['seccion']} - {a['turno']}</font>", est["Normal"]),
                              RLImage(qb, width=150, height=150)])
             while len(fila) < cols: fila.append([])
@@ -1007,119 +1112,162 @@ def df_a_xlsx_multilhoja(hojas):
     buf.seek(0); return buf.getvalue()
 
 
-# ---------- CSS + ESTILOS ----------
 def aplicar_estilos():
     st.markdown("""
     <style>
     html, body, [class*="css"] {
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
-                     'Helvetica Neue', Arial, sans-serif !important;
-        letter-spacing: -0.011em;
-        -webkit-font-smoothing: antialiased;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif !important;
     }
-    h1, h2, h3, h4 { font-weight: 700 !important; letter-spacing: -0.025em !important; }
+    h1, h2, h3, h4 { font-weight: 700 !important; }
     h1 { font-size: 1.9rem !important; }
     h2 { font-size: 1.4rem !important; }
     h3 { font-size: 1.15rem !important; }
-    [data-testid="stMetricValue"] { font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace !important; }
-    ::-webkit-scrollbar { width: 6px; height: 6px; }
-    ::-webkit-scrollbar-thumb { background: #888888; border-radius: 10px; }
-    ::-webkit-scrollbar-thumb:hover { background: #AAAAAA; }
-    section[data-testid="stSidebar"] hr { margin: 12px 0; opacity: 0.3; }
-    section[data-testid="stSidebar"] .stRadio > div { gap: 2px; }
+
     section[data-testid="stSidebar"] .stRadio label {
-        border-radius: 6px !important; padding: 10px 12px !important; margin: 1px 0 !important;
-        transition: background 0.12s ease !important; border: none !important;
-        cursor: pointer !important; font-weight: 500 !important; font-size: 14px !important;
+        border-radius: 6px !important;
+        padding: 10px 12px !important;
+        font-weight: 500 !important;
+        font-size: 14px !important;
     }
-    section[data-testid="stSidebar"] .stRadio label:hover { background: rgba(128, 128, 128, 0.15) !important; }
-    section[data-testid="stSidebar"] .stRadio label:has(input:checked) { background: rgba(128, 128, 128, 0.25) !important; font-weight: 600 !important; }
-    section[data-testid="stSidebar"] .stRadio input { display: none; }
-    .encabezado-sidebar { border: 1px solid rgba(128, 128, 128, 0.3); padding: 16px 14px; margin: 10px 8px; border-radius: 8px; text-align: center; }
-    .encabezado-sidebar .avatar { width: 52px; height: 52px; border-radius: 50%; background: #808080; display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 700; color: #FFFFFF; margin: 0 auto 10px auto; }
-    .encabezado-sidebar .nombre { font-size: 14px; font-weight: 700; line-height: 1.3; }
-    .encabezado-sidebar .rol { display: inline-block; margin-top: 6px; padding: 3px 10px; background: #808080; border-radius: 10px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #FFFFFF !important; }
+    section[data-testid="stSidebar"] .stRadio label:hover {
+        background: rgba(128,128,128,0.15) !important;
+    }
+    section[data-testid="stSidebar"] .stRadio label:has(input:checked) {
+        background: rgba(128,128,128,0.25) !important;
+        font-weight: 600 !important;
+    }
+
+    .encabezado-sidebar {
+        border: 1px solid rgba(128,128,128,0.3);
+        padding: 16px 14px;
+        margin: 10px 8px;
+        border-radius: 8px;
+        text-align: center;
+    }
+    .encabezado-sidebar .avatar {
+        width: 52px; height: 52px; border-radius: 50%;
+        background: #808080; color: #FFFFFF;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 20px; font-weight: 700;
+        margin: 0 auto 10px auto;
+    }
+    .encabezado-sidebar .nombre { font-size: 14px; font-weight: 700; }
+    .encabezado-sidebar .rol {
+        display: inline-block; margin-top: 6px; padding: 3px 10px;
+        background: #808080; color: #FFFFFF; border-radius: 10px;
+        font-size: 10px; font-weight: 700; text-transform: uppercase;
+        letter-spacing: 0.08em;
+    }
+
     .stButton > button, .stFormSubmitButton > button, .stDownloadButton > button {
-        background: #808080 !important; color: #FFFFFF !important; border-radius: 8px !important;
-        font-weight: 600 !important; border: 1px solid #808080 !important; padding: 11px 20px !important;
-        transition: background 0.12s ease, border-color 0.12s ease !important; box-shadow: none !important;
-        font-size: 14px !important; min-height: 44px;
+        background: #808080 !important;
+        color: #FFFFFF !important;
+        border-radius: 8px !important;
+        font-weight: 600 !important;
+        border: 1px solid #808080 !important;
+        padding: 11px 20px !important;
+        font-size: 14px !important;
+        min-height: 44px;
     }
-    .stButton > button:hover, .stFormSubmitButton > button:hover, .stDownloadButton > button:hover { background: #666666 !important; border-color: #666666 !important; color: #FFFFFF !important; }
-    .stButton > button:active, .stFormSubmitButton > button:active, .stDownloadButton > button:active { background: #555555 !important; border-color: #555555 !important; }
-    .stButton > button[kind="secondary"], .stDownloadButton > button { background: transparent !important; color: inherit !important; border: 1px solid #808080 !important; }
-    .stButton > button[kind="secondary"]:hover, .stDownloadButton > button:hover { background: #808080 !important; color: #FFFFFF !important; }
-    div[data-testid="stMetric"] { border: 1px solid rgba(128, 128, 128, 0.3); border-radius: 8px; padding: 18px 20px !important; transition: border-color 0.12s ease; }
-    div[data-testid="stMetric"]:hover { border-color: #808080; }
-    div[data-testid="stMetric"] label { font-size: 11px !important; font-weight: 600 !important; text-transform: uppercase; letter-spacing: 0.08em !important; opacity: 0.7; }
-    div[data-testid="stMetric"] div[data-testid="stMetricValue"] { font-size: 28px !important; font-weight: 700 !important; letter-spacing: -0.02em !important; }
-    .stTextInput input, .stNumberInput input, .stDateInput input, .stTimeInput input, .stTextArea textarea, .stSelectbox > div > div { border-radius: 6px !important; transition: border-color 0.12s ease; min-height: 44px; }
-    .stTextInput input:focus, .stNumberInput input:focus, .stDateInput input:focus, .stTimeInput input:focus, .stTextArea textarea:focus, .stSelectbox > div > div:focus-within { border-color: #808080 !important; box-shadow: 0 0 0 1px #808080 !important; }
-    .stTextInput label, .stNumberInput label, .stDateInput label, .stTimeInput label, .stTextArea label, .stSelectbox label { font-weight: 500 !important; font-size: 13px !important; }
-    .stTabs [data-baseweb="tab-list"] { gap: 4px; overflow-x: auto; flex-wrap: nowrap; }
-    .stTabs [data-baseweb="tab"] { border-radius: 0 !important; font-weight: 500 !important; padding: 12px 16px !important; transition: color 0.12s ease; border-bottom: 2px solid transparent; white-space: nowrap; font-size: 13px !important; }
-    .stTabs [aria-selected="true"] { font-weight: 700 !important; border-bottom: 2px solid #808080 !important; }
-    .streamlit-expanderHeader, details summary { border: 1px solid rgba(128, 128, 128, 0.3) !important; border-radius: 6px !important; font-weight: 600 !important; padding: 12px 14px !important; transition: border-color 0.12s ease; min-height: 44px; }
-    .streamlit-expanderHeader:hover, details summary:hover { border-color: #808080 !important; }
-    .scan-header { border: 1px solid rgba(128, 128, 128, 0.3); padding: 20px 22px; border-radius: 10px; margin-bottom: 16px; }
-    .scan-header .scan-titulo { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; }
+    .stButton > button:hover, .stFormSubmitButton > button:hover, .stDownloadButton > button:hover {
+        background: #666666 !important; border-color: #666666 !important;
+    }
+    .stButton > button[kind="secondary"], .stDownloadButton > button {
+        background: transparent !important;
+        color: inherit !important;
+        border: 1px solid #808080 !important;
+    }
+    .stButton > button[kind="secondary"]:hover, .stDownloadButton > button:hover {
+        background: #808080 !important; color: #FFFFFF !important;
+    }
+
+    div[data-testid="stMetric"] {
+        border: 1px solid rgba(128,128,128,0.3);
+        border-radius: 8px;
+        padding: 18px 20px !important;
+    }
+    div[data-testid="stMetric"] label { font-size: 11px !important; opacity: 0.7; text-transform: uppercase; }
+
+    .stTextInput input, .stNumberInput input, .stDateInput input,
+    .stTimeInput input, .stTextArea textarea, .stSelectbox > div > div {
+        border-radius: 6px !important; min-height: 44px;
+    }
+
+    .scan-header {
+        border: 1px solid rgba(128,128,128,0.3);
+        padding: 20px 22px; border-radius: 10px; margin-bottom: 16px;
+    }
+    .scan-header .scan-titulo { font-size: 22px; font-weight: 700; }
     .scan-header .scan-sub { font-size: 13px; opacity: 0.75; margin-top: 4px; }
-    .scan-ultimos { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; margin: 20px 0 12px 0; padding-bottom: 6px; border-bottom: 1px solid rgba(128, 128, 128, 0.3); }
-    .qr-msg { display: flex; align-items: center; gap: 14px; padding: 14px 16px; border-radius: 6px; margin: 8px 0; border: 1px solid rgba(128, 128, 128, 0.3); border-left: 3px solid #808080; font-weight: 500; }
-    .qr-icono { font-size: 18px; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; border-radius: 50%; border: 1px solid rgba(128, 128, 128, 0.4); flex-shrink: 0; font-weight: 700; }
-    .qr-texto { flex: 1; font-size: 14px; font-weight: 500; line-height: 1.4; }
+    .scan-ultimos {
+        font-size: 11px; font-weight: 700; text-transform: uppercase;
+        letter-spacing: 0.12em; margin: 20px 0 12px 0;
+        padding-bottom: 6px; border-bottom: 1px solid rgba(128,128,128,0.3);
+    }
+    .qr-msg {
+        display: flex; align-items: center; gap: 14px;
+        padding: 14px 16px; border-radius: 6px; margin: 8px 0;
+        border: 1px solid rgba(128,128,128,0.3);
+        border-left: 3px solid #808080;
+    }
+    .qr-icono {
+        font-size: 18px; width: 34px; height: 34px;
+        display: flex; align-items: center; justify-content: center;
+        border-radius: 50%; border: 1px solid rgba(128,128,128,0.4);
+        flex-shrink: 0; font-weight: 700;
+    }
+    .qr-texto { flex: 1; font-size: 14px; }
     .qr-puntual { border-left-color: #66BB6A; } .qr-puntual .qr-icono { color: #66BB6A; }
     .qr-tardanza { border-left-color: #FFB74D; } .qr-tardanza .qr-icono { color: #FFB74D; }
     .qr-derivado { border-left-color: #FF9800; } .qr-derivado .qr-icono { color: #FF9800; }
     .qr-retenido { border-left-color: #FF7043; font-weight: 700; } .qr-retenido .qr-icono { color: #FF7043; }
     .qr-refuerzo { border-left-color: #42A5F5; } .qr-refuerzo .qr-icono { color: #42A5F5; }
-    .qr-bloqueado { border-left-color: #EF5350; font-weight: 800; border: 2px solid #EF5350; } .qr-bloqueado .qr-icono { color: #EF5350; border-color: #EF5350; }
+    .qr-bloqueado { border-left-color: #EF5350; border: 2px solid #EF5350; }
+    .qr-bloqueado .qr-icono { color: #EF5350; border-color: #EF5350; }
     .qr-error { border-left-color: #888888; } .qr-error .qr-icono { color: #888888; }
-    .perfil-card { border: 1px solid rgba(128, 128, 128, 0.3); border-radius: 10px; padding: 24px 26px; margin-bottom: 18px; border-top: 4px solid #808080; }
-    .perfil-nombre { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; line-height: 1.3; }
-    .perfil-meta { font-size: 13px; margin-top: 8px; opacity: 0.8; line-height: 1.6; }
-    .perfil-meta b { font-weight: 600; opacity: 1; }
-    .perfil-badge { display: inline-block; padding: 4px 12px; border-radius: 10px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.10em; background: #808080; color: #FFFFFF; }
+
+    .perfil-card {
+        border: 1px solid rgba(128,128,128,0.3);
+        border-radius: 10px; padding: 24px 26px;
+        margin-bottom: 18px; border-top: 4px solid #808080;
+    }
+    .perfil-nombre { font-size: 22px; font-weight: 700; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .perfil-meta { font-size: 13px; margin-top: 8px; opacity: 0.8; }
+    .perfil-badge {
+        display: inline-block; padding: 4px 12px; border-radius: 10px;
+        font-size: 10px; font-weight: 700; text-transform: uppercase;
+        background: #808080; color: #FFFFFF;
+    }
     .badge-bloqueado { background: #EF5350; color: #FFFFFF; }
     .badge-observado { background: #FFB74D; color: #0A0A0A; }
     .badge-ok { background: #808080; color: #FFFFFF; }
-    .perfil-resumen { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 12px; margin-top: 18px; }
-    .perfil-resumen-item { border: 1px solid rgba(128, 128, 128, 0.3); border-radius: 8px; padding: 14px 10px; text-align: center; transition: border-color 0.12s ease; }
-    .perfil-resumen-item:hover { border-color: #808080; }
-    .perfil-resumen-item .num { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; }
-    .perfil-resumen-item .lbl { font-size: 10px; text-transform: uppercase; letter-spacing: 0.10em; font-weight: 600; margin-top: 4px; opacity: 0.7; }
-    .login-card { border: 1px solid rgba(128, 128, 128, 0.3); border-radius: 10px; padding: 36px 30px; border-top: 4px solid #808080; }
-    div[data-testid="stDataFrame"] { border-radius: 8px; overflow: hidden; border: 1px solid rgba(128, 128, 128, 0.3); }
-    div[data-testid="stAlert"] { border-radius: 6px; border-left: 3px solid #808080; }
-    hr { border: none; height: 1px; background: rgba(128, 128, 128, 0.3); margin: 20px 0; }
-    .stCheckbox label, .stRadio label { font-weight: 500; }
-    @media (max-width: 768px) {
-        h1 { font-size: 1.4rem !important; } h2 { font-size: 1.15rem !important; } h3 { font-size: 1rem !important; }
-        .stButton > button, .stFormSubmitButton > button, .stDownloadButton > button { width: 100% !important; padding: 14px 18px !important; font-size: 15px !important; min-height: 48px; }
-        div[data-testid="stMetric"] { padding: 14px 16px !important; }
-        div[data-testid="stMetric"] div[data-testid="stMetricValue"] { font-size: 22px !important; }
-        div[data-testid="stMetric"] label { font-size: 10px !important; }
-        .scan-header { padding: 16px 18px; border-radius: 8px; }
-        .scan-header .scan-titulo { font-size: 17px; }
-        .scan-header .scan-sub { font-size: 12px; }
-        .qr-msg { padding: 12px 14px; gap: 12px; }
-        .qr-icono { width: 30px; height: 30px; font-size: 15px; }
-        .qr-texto { font-size: 13px; }
-        .perfil-card { padding: 18px 18px; border-radius: 8px; }
-        .perfil-nombre { font-size: 17px; }
-        .perfil-meta { font-size: 12px; }
-        .perfil-resumen { grid-template-columns: repeat(2, 1fr); gap: 10px; }
-        .perfil-resumen-item .num { font-size: 18px; }
-        .perfil-resumen-item .lbl { font-size: 9px; }
-        .login-card { padding: 26px 20px; border-radius: 10px; }
-        .encabezado-sidebar { padding: 14px 12px; margin: 8px 6px; }
-        .encabezado-sidebar .avatar { width: 42px; height: 42px; font-size: 18px; }
-        .encabezado-sidebar .nombre { font-size: 13px; }
-        .stTabs [data-baseweb="tab"] { padding: 10px 12px !important; font-size: 12px !important; }
+    .perfil-resumen {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+        gap: 12px; margin-top: 18px;
     }
-    @media (max-width: 400px) {
-        .perfil-resumen { grid-template-columns: 1fr; }
-        .scan-header .scan-titulo { font-size: 15px; }
+    .perfil-resumen-item {
+        border: 1px solid rgba(128,128,128,0.3);
+        border-radius: 8px; padding: 14px 10px; text-align: center;
+    }
+    .perfil-resumen-item .num { font-size: 22px; font-weight: 700; }
+    .perfil-resumen-item .lbl { font-size: 10px; text-transform: uppercase; opacity: 0.7; }
+
+    .login-card {
+        border: 1px solid rgba(128,128,128,0.3);
+        border-radius: 10px; padding: 36px 30px;
+        border-top: 4px solid #808080;
+    }
+
+    hr { border: none; height: 1px; background: rgba(128,128,128,0.3); margin: 20px 0; }
+
+    @media (max-width: 768px) {
+        h1 { font-size: 1.4rem !important; }
+        h2 { font-size: 1.15rem !important; }
+        .stButton > button, .stFormSubmitButton > button, .stDownloadButton > button {
+            width: 100% !important;
+        }
+        .perfil-resumen { grid-template-columns: repeat(2, 1fr); }
     }
     </style>
     """, unsafe_allow_html=True)
@@ -1143,11 +1291,11 @@ def filtros_grado_seccion_nombre(clave, placeholder="Buscar"):
         t = st.text_input("Buscar", placeholder=placeholder, key=f"{clave}_t")
     return (g["id"] if g else None, s["id"] if (g and g["id"] and s) else None, t.strip())
 
-# ---------- LOGIN ----------
+
 def vista_login():
     st.markdown("""
     <div style="text-align:center; margin-top:40px; margin-bottom:20px;">
-        <h1 style="font-size:42px; margin-bottom:6px; border:none; letter-spacing:-1px;">Sistema de Asistencia</h1>
+        <h1 style="font-size:42px; margin-bottom:6px; letter-spacing:-1px;">Sistema de Asistencia</h1>
         <p style="font-size:18px; font-weight:600; margin-top:0; color:#E65100;">I.E. Yarinacocha</p>
     </div>
     """, unsafe_allow_html=True)
@@ -1197,13 +1345,13 @@ def vista_cambio_password_obligatorio():
                 auditar(usuario["usuario"], "Cambio pwd obligatorio")
                 st.rerun()
 
-# ---------- PUERTA ----------
+
 def vista_puerta():
     usuario = st.session_state["user"]
     fecha = hoy_str()
     st.markdown(f"""
     <div style="background:#E65100; padding:22px 28px; border-radius:10px; color:white; margin-bottom:20px;">
-        <div style="font-size:26px; font-weight:700; letter-spacing:-0.5px;">Control de Puerta</div>
+        <div style="font-size:26px; font-weight:700;">Control de Puerta</div>
         <div style="font-size:14px; opacity:0.9; margin-top:4px;">{fecha}</div>
     </div>
     """, unsafe_allow_html=True)
@@ -1248,11 +1396,11 @@ def vista_puerta():
                     _, _, msg, _ = registrar_entrada(al["dni"], usuario)
                     st.toast(msg)
 
-# ---------- TOECE ----------
+
 def vista_toece():
     st.title("TOECE")
     usuario = st.session_state["user"]
-    tabs = st.tabs(["Casos activos", "Bloqueados", "Observados", "Firmar acta", "Justificar previo"])
+    tabs = st.tabs(["Casos activos", "Bloqueados", "Observados", "Firmar acta", "Justificar previo", "Permisos"])
     with tabs[0]:
         df = casos_toece()
         if df.empty: st.info("Sin casos activos.")
@@ -1261,7 +1409,7 @@ def vista_toece():
             st.download_button("Excel", df_a_xlsx(df), "casos_toece.xlsx")
     with tabs[1]:
         st.subheader("Alumnos bloqueados")
-        st.caption("Bloqueo automatico a la 4ta tardanza. TOECE puede desbloquear o volver a bloquear manualmente.")
+        st.caption("Bloqueo automatico a la 4ta tardanza.")
         df = listar_bloqueados()
         if df.empty: st.info("Sin bloqueados.")
         else:
@@ -1288,7 +1436,6 @@ def vista_toece():
                         st.toast("Alumno bloqueado correctamente"); st.rerun()
     with tabs[2]:
         st.subheader("Alumnos observados")
-        st.caption("Los observados son permanentes. Se pueden cerrar pero no eliminar.")
         solo = st.checkbox("Solo activos", value=True, key="obs_act")
         df = listar_observados(solo_activos=solo)
         if df.empty: st.info("Sin observados.")
@@ -1346,8 +1493,8 @@ def vista_toece():
                 auditar(usuario["usuario"], f"Firmo acta alumno_id={ops[sel]}")
                 st.toast("Acta registrada correctamente"); st.rerun()
     with tabs[4]:
-        st.subheader("Justificacion previa (48h antes hasta 24h despues)")
-        st.caption("Se puede justificar desde 48 horas antes hasta 24 horas despues del dia.")
+        st.subheader("Justificacion previa")
+        st.caption("48 horas antes hasta 24 horas despues.")
         idg, ids, texto = filtros_grado_seccion_nombre("jp")
         df = buscar_alumnos(texto, idg, ids, limite=100)
         if df.empty: st.info("Sin alumnos.")
@@ -1369,8 +1516,36 @@ def vista_toece():
                     ok, msg = crear_justificacion_previa(f["id"], fo.strftime("%Y-%m-%d"), tipo, mot, usuario)
                     if ok: st.toast(msg)
                     else: st.error(msg)
+    with tabs[5]:
+        st.subheader("Permisos")
+        st.caption("Se puede registrar 48 horas antes, durante la ventana, y hasta 24 horas despues.")
+        idg, ids, texto = filtros_grado_seccion_nombre("perm")
+        df = buscar_alumnos(texto, idg, ids, limite=100)
+        if df.empty: st.info("Sin alumnos.")
+        else:
+            ops = {f"{r['nombre_completo']} ({r['dni']})": r["dni"] for _, r in df.iterrows()}
+            with st.form("permiso_form"):
+                sel = st.selectbox("Alumno", list(ops.keys()))
+                fo = st.date_input("Fecha del permiso",
+                                   value=ahora().date(),
+                                   min_value=ahora().date() - timedelta(days=1),
+                                   max_value=ahora().date() + timedelta(days=2))
+                mot = st.text_input("Motivo del permiso")
+                sub = st.form_submit_button("Registrar permiso", type="primary")
+            if sub:
+                con = obtener_conexion()
+                f = con.execute("SELECT id FROM alumnos WHERE dni=?", (ops[sel],)).fetchone()
+                if f:
+                    ok, msg = crear_permiso(f["id"], fo.strftime("%Y-%m-%d"), mot, usuario)
+                    if ok: st.toast(msg); st.rerun()
+                    else: st.error(msg)
+        st.markdown("---")
+        st.subheader("Permisos registrados")
+        dp = listar_permisos(solo_activos=False)
+        if dp.empty: st.info("Sin permisos registrados.")
+        else: st.dataframe(dp, use_container_width=True)
 
-# ---------- PANEL DIRECCION ----------
+
 def vista_panel_direccion():
     st.title("Panel Direccion")
     fecha = hoy_str()
@@ -1391,7 +1566,7 @@ def vista_panel_direccion():
     if df.empty: st.info("Sin escaneos hoy.")
     else: st.dataframe(df, use_container_width=True)
 
-# ---------- REPORTES ----------
+
 def _selector_secciones(clave, permitidas=None):
     secs = listar_todas_secciones()
     if permitidas is not None: secs = [s for s in secs if s["id"] in permitidas]
@@ -1405,7 +1580,7 @@ def _selector_secciones(clave, permitidas=None):
             if st.checkbox(etiquetas[s["id"]], key=f"{clave}_{s['id']}"): sel.append(s["id"])
     return sel, etiquetas
 
-def cierre_mensual(mes, anio, turno, idg=None, ids=None, ids_sec=None, pid=None):
+def cierre_mensual(mes, anio, turno, ids_sec=None, pid=None):
     ult = monthrange(anio, mes)[1]
     ini = f"{anio:04d}-{mes:02d}-01"; fin = f"{anio:04d}-{mes:02d}-{ult:02d}"
     con = obtener_conexion()
@@ -1449,15 +1624,19 @@ def vista_reportes():
         st.info("Selecciona al menos una seccion para continuar."); return
     st.markdown("---")
     st.subheader("2. Configura el reporte")
+    if rol == "Auxiliar":
+        opciones_tipo = ["Diario", "Mensual", "Bimestral"]
+    else:
+        opciones_tipo = ["Diario", "Mensual", "Bimestral", "Conteo faltas", "Cierre mensual"]
     c1, c2, c3 = st.columns(3)
-    with c1: tipo = st.selectbox("Tipo de reporte", ["Detalle", "Conteo faltas", "Cierre mensual"])
+    with c1: tipo = st.selectbox("Tipo de reporte", opciones_tipo)
     with c2: desde = st.date_input("Desde", ahora().date() - timedelta(days=7))
     with c3: hasta = st.date_input("Hasta", ahora().date())
     tipo_asist = st.selectbox("Asistencia", ["clases", "reforzamiento", "todas"])
     turno = st.selectbox("Turno", ["Todos"] + [t["nombre"] for t in listar_turnos()])
     if st.button("Generar reporte", type="primary"):
         if tipo == "Cierre mensual":
-            df = cierre_mensual(ahora().month, ahora().year, turno, None, None, ids_sel, pid)
+            df = cierre_mensual(ahora().month, ahora().year, turno, ids_sel, pid)
             if df.empty: st.warning("Sin datos.")
             else:
                 st.dataframe(df, use_container_width=True)
@@ -1466,6 +1645,15 @@ def vista_reportes():
         if tipo == "Conteo faltas":
             df = reporte_conteo_faltas(desde, hasta, turno, None, None, "", ids_sel, pid)
             st.write(f"**{len(df)} agrupaciones con faltas**")
+        elif tipo == "Diario":
+            df = reporte_diario(desde, hasta, turno, ids_sel, pid, tipo_asist)
+            st.write(f"**{len(df)} alumnos**")
+        elif tipo == "Mensual":
+            df = reporte_mensual(desde, hasta, turno, ids_sel, pid, tipo_asist)
+            st.write(f"**{len(df)} alumnos**")
+        elif tipo == "Bimestral":
+            df = reporte_bimestral(desde, hasta, turno, ids_sel, pid, tipo_asist)
+            st.write(f"**{len(df)} alumnos**")
         else:
             df = reporte_detalle(desde, hasta, turno, None, None, "", tipo_asist, ids_sel, pid)
             st.write(f"**{len(df)} registros agrupados**")
@@ -1475,7 +1663,7 @@ def vista_reportes():
         with c1: st.download_button("Excel", df_a_xlsx(df), "reporte.xlsx", use_container_width=True)
         with c2: st.download_button("PDF", generar_pdf_tabla(df, "Reporte"), "reporte.pdf", "application/pdf", use_container_width=True)
 
-# ---------- ALUMNOS ----------
+
 def _frag_crear_alumno():
     st.subheader("Crear alumno manualmente")
     grados = listar_grados()
@@ -1567,8 +1755,8 @@ def _perfil_alumno(idal):
         st.markdown(f"""
         <div class="perfil-card">
             <div class="perfil-nombre">{nombre} {badge}</div>
-            <div class="perfil-meta"><b>DNI:</b> {al['dni']} &nbsp;|&nbsp; <b>Grado:</b> {al['grado']} &nbsp;|&nbsp; <b>Seccion:</b> {al['seccion']} &nbsp;|&nbsp; <b>Turno:</b> {al['turno']}</div>
-            <div class="perfil-meta"><b>Apoderado:</b> {al['nombre_apoderado'] or '-'} &nbsp;|&nbsp; <b>Telefono:</b> {al['telefono_apoderado'] or '-'}</div>
+            <div class="perfil-meta"><b>DNI:</b> {al['dni']} | <b>Grado:</b> {al['grado']} | <b>Seccion:</b> {al['seccion']} | <b>Turno:</b> {al['turno']}</div>
+            <div class="perfil-meta"><b>Apoderado:</b> {al['nombre_apoderado'] or '-'} | <b>Telefono:</b> {al['telefono_apoderado'] or '-'}</div>
             <div class="perfil-resumen">
                 <div class="perfil-resumen-item"><div class="num">{d['total_puntuales']}</div><div class="lbl">Puntuales</div></div>
                 <div class="perfil-resumen-item"><div class="num">{d['total_tardanzas']}</div><div class="lbl">Tardanzas</div></div>
@@ -1608,7 +1796,7 @@ def _perfil_alumno(idal):
                     else:
                         ok, msg = reactivar_alumno(al["id"], al["dni"], usuario); st.toast(msg); st.rerun()
     st.markdown("---")
-    tabs = st.tabs(["Asistencias", "Tardanzas", "Actas", "Observados", "Bloqueos", "Just. previas"])
+    tabs = st.tabs(["Asistencias", "Tardanzas", "Actas", "Observados", "Bloqueos", "Just. previas", "Permisos"])
     with tabs[0]:
         if d["asistencias"].empty: st.info("Sin asistencias registradas.")
         else: st.dataframe(d["asistencias"], use_container_width=True)
@@ -1627,6 +1815,9 @@ def _perfil_alumno(idal):
     with tabs[5]:
         if d["just_previas"].empty: st.info("Sin justificaciones previas.")
         else: st.dataframe(d["just_previas"], use_container_width=True)
+    with tabs[6]:
+        if d["permisos"].empty: st.info("Sin permisos registrados.")
+        else: st.dataframe(d["permisos"], use_container_width=True)
 
 def vista_alumnos():
     st.title("Alumnos")
@@ -1637,10 +1828,10 @@ def vista_alumnos():
     with tabs[1]: _frag_crear_alumno()
     with tabs[2]: _frag_editar_alumno()
 
-# ---------- GRADOS Y SECCIONES ----------
+
 def vista_grados_secciones():
     st.title("Grados y Secciones")
-    st.caption("Las secciones se crean automaticamente al importar el Excel de alumnos. Aqui solo se listan.")
+    st.caption("Las secciones se crean automaticamente al importar el Excel de alumnos.")
     con = obtener_conexion()
     grados = listar_grados()
     st.subheader("Grados")
@@ -1651,10 +1842,10 @@ def vista_grados_secciones():
     if df.empty: st.info("Sin secciones. Importa un Excel de alumnos para crearlas.")
     else: st.dataframe(df, use_container_width=True)
 
-# ---------- CARNETS ----------
+
 def vista_carnets():
     st.title("Carnets QR")
-    st.caption("Selecciona los alumnos y descarga solo sus carnets, o descarga el salon completo.")
+    st.caption("Selecciona los alumnos y descarga sus carnets, o descarga el salon completo.")
     grados = listar_grados()
     if not grados: st.warning("No hay grados."); return
     c1, c2 = st.columns(2)
@@ -1667,7 +1858,6 @@ def vista_carnets():
     if df.empty: st.info("Sin alumnos en esa seccion."); return
     st.markdown("---")
     st.write(f"**{len(df)} alumnos en {g['nombre']} {s['nombre']}**")
-    st.write("**Selecciona los alumnos para descargar sus carnets:**")
     sel = []; cols = st.columns(3)
     for i, (_, al) in enumerate(df.iterrows()):
         with cols[i % 3]:
@@ -1685,7 +1875,7 @@ def vista_carnets():
             pdf = pdf_carnets_por_seccion(s["id"])
             if pdf: st.download_button("Descargar PDF", pdf, f"carnets_{g['nombre']}{s['nombre']}.pdf", "application/pdf")
 
-# ---------- VENTANAS ----------
+
 def vista_ventanas():
     st.title("Ventanas de asistencia")
     st.caption("Configura apertura, limite puntual y cierre por turno y tipo.")
@@ -1722,7 +1912,7 @@ def vista_ventanas():
                         st.toast("Ventana actualizada correctamente")
                         st.rerun()
 
-# ---------- USUARIOS ----------
+
 def vista_usuarios():
     st.title("Usuarios")
     usuario = st.session_state["user"]; con = obtener_conexion()
@@ -1737,7 +1927,7 @@ def vista_usuarios():
             with c2:
                 n = st.text_input("Nombres (max 15)")
                 r = st.selectbox("Rol", ["TOECE", "Auxiliar", "Direccion"])
-            st.caption("Contrasena: minimo 6, al menos 1 minuscula, 1 caracter especial y 4 numeros.")
+            st.caption("Contrasena: minimo 6, 1 minuscula, 1 especial, 4 numeros.")
             t_lbl = st.selectbox("Turno (solo Auxiliar)", ["Ninguno"] + [x["nombre"] for x in listar_turnos()])
             pwd_admin = st.text_input("Contrasena de Admin para confirmar *", type="password")
             if st.form_submit_button("Crear", type="primary"):
@@ -1812,11 +2002,10 @@ def vista_usuarios():
                 con.commit(); auditar(usuario["usuario"], f"Asigno {len(sel_s)} secciones a usuario_id={ida}")
                 st.toast("Asignaciones guardadas correctamente"); st.rerun()
 
-# ---------- AUDITORIA ----------
+
 def _frag_importar_excel():
     st.subheader("Cargar alumnos al periodo")
     st.info("Columnas: DNI, Nombres, Apellido Paterno, Apellido Materno, Grado, Seccion, Turno, Apoderado, Telefono.")
-    st.caption("Si un DNI ya existe, se reactiva y actualiza grado/seccion.")
     arch = st.file_uploader("Sube el Excel", type=["xlsx", "xls"], key="import_excel_periodo")
     if not arch: return
     df = pd.read_excel(arch)
@@ -1867,7 +2056,6 @@ def vista_auditoria():
         st.subheader("Periodos")
         st.dataframe(listar_periodos(), use_container_width=True)
         st.markdown("### Crear nuevo periodo")
-        st.caption("Al crear un periodo se activa automaticamente y podras cargar los alumnos.")
         with st.form("nuevo_periodo"):
             c1, c2, c3 = st.columns(3)
             with c1: nom = st.text_input("Nombre (ej: 2026)")
@@ -1887,8 +2075,8 @@ def vista_auditoria():
         st.markdown("### Cargar alumnos al periodo activo")
         p = obtener_periodo_activo()
         if p:
-            if periodo_tiene_alumnos(p["id"]): st.success(f"El periodo '{p['nombre']}' ya tiene alumnos cargados. Puedes subir otro Excel para agregar o actualizar alumnos.")
-            else: st.warning(f"El periodo '{p['nombre']}' NO tiene alumnos. Sube el Excel para activar el sistema.")
+            if periodo_tiene_alumnos(p["id"]): st.success(f"El periodo '{p['nombre']}' ya tiene alumnos cargados.")
+            else: st.warning(f"El periodo '{p['nombre']}' NO tiene alumnos. Sube el Excel.")
             _frag_importar_excel()
         else: st.info("No hay periodo activo. Crea uno primero.")
         st.markdown("---")
@@ -1907,7 +2095,7 @@ def vista_auditoria():
                     else: st.error(msg)
     with tabs[2]:
         st.subheader("Cierre de año escolar")
-        st.warning("Al cerrar el periodo se desactivan TODOS los alumnos de ese periodo. El periodo queda cerrado y no se puede reactivar. Se crea un nuevo periodo vacio.")
+        st.warning("Al cerrar el periodo se desactivan TODOS los alumnos de ese periodo.")
         p = obtener_periodo_activo()
         if not p: st.info("No hay periodo activo."); return
         st.info(f"Periodo activo: {p['nombre']} ({p['fecha_inicio']} - {p['fecha_fin']})")
@@ -1953,7 +2141,7 @@ def vista_auditoria():
         dfp = listar_periodos_cerrados()
         if not dfp.empty: st.dataframe(dfp, use_container_width=True)
 
-# ---------- DIAS ESPECIALES ----------
+
 def vista_dias_especiales():
     st.title("Dias especiales")
     usuario = st.session_state["user"]; con = obtener_conexion()
@@ -1975,7 +2163,7 @@ def vista_dias_especiales():
                 else:
                     turnos_opts = {"Ambos": None}; t_lbl = "Ambos"
                     hora_dt = datetime.strptime("00:00", "%H:%M").time()
-                    st.info("Los feriados no tienen horario ni turno. Aplican a todo el colegio ese dia.")
+                    st.info("Los feriados no tienen horario ni turno.")
             st.markdown("**Alcance del dia especial:**")
             st.caption("Si no marcas nada, aplica a TODO el colegio.")
             with st.expander("Filtrar por grados y secciones", expanded=False):
@@ -2030,7 +2218,7 @@ def vista_dias_especiales():
                     auditar(usuario["usuario"], f"Elimino dia especial id={ops[sel]}")
                     st.toast("Dia especial eliminado correctamente"); st.rerun()
 
-# ---------- MENU / RUTAS / MAIN ----------
+
 OPCIONES_POR_ROL = {
     "Admin": ["Puerta","TOECE","Panel Direccion","Reportes","Alumnos","Grados y Secciones","Carnets","Dias especiales","Ventanas","Usuarios","Auditoria"],
     "TOECE": ["Puerta","TOECE","Reportes","Dias especiales"],
