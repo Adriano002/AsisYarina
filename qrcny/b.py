@@ -1660,18 +1660,23 @@ def _frag_crear_alumno():
         with c1:
             dni = st.text_input("DNI * (8 digitos)", max_chars=8)
             nom = st.text_input("Nombres *"); pat = st.text_input("Apellido Paterno *")
-        with c2:
+       with c2:
             mat = st.text_input("Apellido Materno")
-            g = st.selectbox("Grado *", grados, format_func=lambda x: x["nombre"])
+            g = st.selectbox("Grado *", grados, format_func=lambda x: x["nombre"], key="crear_grado")
             secs = secciones_por_grado(g["id"]) if g else []
-            s = st.selectbox("Seccion *", secs, format_func=lambda x: x["nombre"]) if secs else None
-        c3, c4 = st.columns(2)
+            if secs:
+          s = st.selectbox("Seccion *", secs, format_func=lambda x: x["nombre"], key=f"crear_sec_{g['id']}")
+          else:
+            s = None
+            st.warning("Ese grado no tiene secciones.")
         with c3: apo = st.text_input("Apoderado (opcional)")
         with c4: tel = st.text_input("Telefono (opcional)")
         pwd_admin = st.text_input("Contrasena de Admin para confirmar *", type="password")
         if st.form_submit_button("Crear", type="primary"):
-            if not dni or not nom or not pat or not s:
-                st.error("Completa obligatorios."); return
+            if not dni or not nom or not pat:
+                st.error("Completa los campos obligatorios."); return
+            if not s:
+                st.error("Debes seleccionar una seccion."); return
             if not re.fullmatch(r"\d{8}", dni.strip()):
                 st.error("DNI invalido."); return
             if not pwd_admin:
@@ -1700,9 +1705,10 @@ def _frag_editar_alumno():
         tel = st.text_input("Telefono", value=datos["telefono_apoderado"] or "")
         idxg = next((i for i, g in enumerate(grados) if g["nombre"] == datos["grado"]), 0)
         g = st.selectbox("Grado", grados, index=idxg, format_func=lambda x: x["nombre"])
+        g = st.selectbox("Grado", grados, index=idxg, format_func=lambda x: x["nombre"], key="edit_grado")
         secs = secciones_por_grado(g["id"]) if g else []
         idxs = next((i for i, s in enumerate(secs) if s["id"] == datos["seccion_id"]), 0)
-        s = st.selectbox("Seccion", secs, index=idxs, format_func=lambda x: x["nombre"])
+        s = st.selectbox("Seccion", secs, index=idxs, format_func=lambda x: x["nombre"], key=f"edit_sec_{g['id']}")
         pwd_admin = st.text_input("Contrasena de Admin para confirmar *", type="password")
         if st.form_submit_button("Guardar", type="primary"):
             if not pwd_admin:
