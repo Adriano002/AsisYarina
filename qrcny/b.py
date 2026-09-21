@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
-
+from streamlit_back_camera_input import back_camera_input
 import cv2
 import extra_streamlit_components as stx
 import numpy as np
@@ -691,19 +691,24 @@ def leer_qr(img):
     return None
 
 
-# CAMBIO: ahora usa st.camera_input en vez de camera_input_live
 def escaner_qr_continuo(key="qr_scanner"):
-    st.markdown('<div class="scan-header"><div class="scan-titulo">Escaneo QR</div><div class="scan-sub">Toma una foto del codigo del alumno</div></div>', unsafe_allow_html=True)
-    img_file = st.camera_input("Escanea el QR", key=f"cam_{key}")
+    st.markdown('<div class="scan-header"><div class="scan-titulo">Escaneo QR</div><div class="scan-sub">Toca el video para capturar el codigo del alumno</div></div>', unsafe_allow_html=True)
+
+    # Cámara trasera por defecto. Solo se toca el video para tomar la foto.
+    img_file = back_camera_input(key=f"cam_{key}")
+
     if img_file:
-        dni = leer_qr(Image.open(BytesIO(img_file.getvalue())))
+        # 'img_file' es un objeto tipo file, lo abrimos con PIL
+        dni = leer_qr(Image.open(img_file))
         if not dni:
             st.error("No se detecto QR. Prueba con mejor luz o mas cerca.")
         else:
             _procesar_escaneo(dni)
+
     if st.session_state.get("_qr_mensajes"):
         st.markdown('<div class="scan-ultimos">Ultimos escaneos</div>', unsafe_allow_html=True)
-        for msg in st.session_state["_qr_mensajes"][:5]: _render_mensaje_qr(msg)
+        for msg in st.session_state["_qr_mensajes"][:5]:
+            _render_mensaje_qr(msg)
 
 
 # ---------- REPORTES ----------
