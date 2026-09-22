@@ -333,6 +333,21 @@ def refrescar_sesion_si_necesario():
     except Exception as e:
         log.warning("refresh sesion: %s", e)
 
+  def cerrar_sesion():
+    """Cierra la sesión del usuario actual: borra token, cookie y session_state."""
+    usuario = st.session_state.get("user")
+    if usuario:
+        auditar(usuario["usuario"], "Logout")
+    tok = st.session_state.get("_token") or _leer_cookie()
+    if tok:
+        try:
+            eliminar_token(tok)
+        except Exception as e:
+            log.warning("eliminar token logout: %s", e)
+    _borrar_cookie()
+    for k in list(st.session_state.keys()):
+        del st.session_state[k]
+
 # ---------- AUTH ----------
 def _bloqueado(u):
     if not u.get("bloqueado_hasta"): return False
