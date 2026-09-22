@@ -333,7 +333,7 @@ def refrescar_sesion_si_necesario():
     except Exception as e:
         log.warning("refresh sesion: %s", e)
 
-  def cerrar_sesion():
+def cerrar_sesion():
     """Cierra la sesión del usuario actual: borra token, cookie y session_state."""
     usuario = st.session_state.get("user")
     if usuario:
