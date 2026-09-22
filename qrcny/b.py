@@ -1,8 +1,3 @@
-# ============================================================
-# SISTEMA DE ASISTENCIA - I.E. YARINACOCHA
-# Ejecutar: streamlit run app.py
-# ============================================================
-
 import hashlib
 import re
 import secrets
@@ -17,11 +12,6 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
-
-# ============================================================
-# CONSTANTES
-# ============================================================
-
 RUTA_BD = "asistencia.db"
 ZONA_PERU = timezone(timedelta(hours=-5))
 
@@ -43,11 +33,6 @@ PERDONADO = "PERDONADO"
 DERIVADO = "DERIVADO_TOECE"
 RETENIDO = "RETENIDO_APODERADO"
 
-
-# ============================================================
-# FECHAS
-# ============================================================
-
 def ahora():
     return datetime.now(ZONA_PERU)
 
@@ -65,11 +50,6 @@ def fecha_hora():
 
 def es_fin_de_semana():
     return ahora().weekday() >= 5
-
-
-# ============================================================
-# BASE DE DATOS
-# ============================================================
 
 _conexion = None
 
@@ -239,11 +219,6 @@ def _datos_iniciales():
 
     con.commit()
 
-
-# ============================================================
-# AUTENTICACIÓN
-# ============================================================
-
 def hashear_password(password):
     sal = secrets.token_bytes(16)
     hash_bytes = hashlib.pbkdf2_hmac("sha256", password.encode(), sal, 260000)
@@ -315,11 +290,6 @@ def auditar(accion, tabla=None, registro_id=None):
         (nombre, accion, fecha_hora(), tabla, registro_id)
     )
     con.commit()
-
-
-# ============================================================
-# ALUMNOS
-# ============================================================
 
 def listar_grados():
     con = conexion()
@@ -418,11 +388,6 @@ def crear_alumno(dni, nombres, apellido_paterno, apellido_materno, seccion_id, a
     except sqlite3.Error as e:
         return False, f"Error: {e}"
 
-
-# ============================================================
-# DÍAS ESPECIALES
-# ============================================================
-
 def dia_especial_de_hoy(turno_id, seccion_id=None):
     con = conexion()
     filas = con.execute("""
@@ -474,11 +439,6 @@ def eliminar_dia_especial(dia_id):
     con.commit()
     auditar(f"Eliminó día especial id={dia_id}", "dias_especiales", dia_id)
     return True, "Día especial eliminado."
-
-
-# ============================================================
-# ASISTENCIAS
-# ============================================================
 
 def ventana_activa(turno_id, seccion_id=None):
     feriado = es_feriado_hoy()
@@ -668,11 +628,6 @@ def listar_bloqueados():
         ORDER BY b.fecha_inicio DESC
     """, con)
 
-
-# ============================================================
-# MARCAR FALTAS
-# ============================================================
-
 def marcar_faltas_del_dia():
     feriado = es_feriado_hoy()
     if feriado:
@@ -726,11 +681,6 @@ def marcar_faltas_del_dia():
     con.commit()
     return total
 
-
-# ============================================================
-# MÉTRICAS
-# ============================================================
-
 def metricas_de_hoy():
     con = conexion()
     f = hoy()
@@ -771,7 +721,6 @@ def metricas_de_hoy():
         "reforzamiento": reforzamiento,
         "bloqueados": bloqueados,
     }
-
 
 def registros_de_hoy(limite=30):
     con = conexion()
@@ -841,10 +790,6 @@ def listar_observados(solo_activos=True):
     sql += " ORDER BY o.fecha_ingreso DESC"
     return pd.read_sql(sql, con)
 
-
-# ============================================================
-# REPORTES
-# ============================================================
 
 LETRAS_ESTADO = {
     "Puntual": "P",
@@ -1038,11 +983,6 @@ def exportar_excel(df, hoja="Datos"):
     buffer.seek(0)
     return buffer.getvalue()
 
-
-# ============================================================
-# CARNETS PDF
-# ============================================================
-
 def generar_qr_imagen(dni):
     qr = qrcode.QRCode(version=1, box_size=10, border=2)
     qr.add_data(str(dni))
@@ -1106,10 +1046,6 @@ def generar_pdf_carnets(alumnos, titulo="Carnets QR"):
     return buffer.getvalue()
 
 
-# ============================================================
-# UI ESTILOS
-# ============================================================
-
 def aplicar_estilos():
     st.markdown("""
     <style>
@@ -1142,11 +1078,6 @@ def mostrar_mensaje(tipo, texto):
     }
     clase = clases.get(tipo, "mensaje-error")
     st.markdown(f'<div class="{clase}">{texto}</div>', unsafe_allow_html=True)
-
-
-# ============================================================
-# VISTAS
-# ============================================================
 
 def pantalla_login():
     st.markdown("""
@@ -1619,10 +1550,6 @@ def vista_auditoria():
         st.dataframe(df, use_container_width=True)
 
 
-# ============================================================
-# MENÚ Y ENRUTAMIENTO
-# ============================================================
-
 MENU_POR_ROL = {
     ADMIN: ["Puerta", "Panel Dirección", "Alumnos", "Reportes", "Carnets",
             "Días especiales", "Ventanas", "Bloqueados", "Observados", "Usuarios", "Auditoría"],
@@ -1663,11 +1590,6 @@ def menu_lateral():
             cerrar_sesion()
             st.rerun()
     return opcion
-
-
-# ============================================================
-# MAIN
-# ============================================================
 
 def main():
     st.set_page_config(
