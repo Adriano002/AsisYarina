@@ -20,6 +20,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import (Image as RLImage, PageBreak, Paragraph,
                                  SimpleDocTemplate, Spacer, Table, TableStyle)
+from streamlit_qrcode_scanner import qrcode_scanner
 
 # ---------- LOGS ----------
 LOG_DIR = Path("logs"); LOG_DIR.mkdir(exist_ok=True)
@@ -170,8 +171,8 @@ def _seed(cur):
         tm = cur.execute("SELECT id FROM turnos WHERE nombre='Mañana'").fetchone()
         tt = cur.execute("SELECT id FROM turnos WHERE nombre='Tarde'").fetchone()
         if tm:
-            cur.execute("INSERT INTO ventanas(turno_id,tipo,nombre,hora_apertura,hora_limite_puntual,hora_cierre,tolerancia_min,orden) VALUES(?,'clases','Clases mañana','06:00','06:55','12:25',10,1)",(tm["id"],))
-            cur.execute("INSERT INTO ventanas(turno_id,tipo,nombre,hora_apertura,hora_limite_puntual,hora_cierre,tolerancia_min,orden) VALUES(?,'reforzamiento','Reforzamiento mañana','14:00','14:00','16:00',0,2)",(tm["id"],))
+            cur.execute("INSERT INTO ventanas(turno_id,tipo,nombre,hora_apertura,hora_limite_puntual,hora_cierre,tolerancia_min,orden) VALUES(?,'clases','Clases mañana','06:00','06:55','07:10',10,1)",(tm["id"],))
+            cur.execute("INSERT INTO ventanas(turno_id,tipo,nombre,hora_apertura,hora_limite_puntual,hora_cierre,tolerancia_min,orden) VALUES(?,'reforzamiento','Reforzamiento mañana','08:00','08:00','14:00',0,2)",(tm["id"],))
         if tt:
             cur.execute("INSERT INTO ventanas(turno_id,tipo,nombre,hora_apertura,hora_limite_puntual,hora_cierre,tolerancia_min,orden) VALUES(?,'reforzamiento','Reforzamiento tarde','10:00','10:00','10:20',0,1)",(tt["id"],))
             cur.execute("INSERT INTO ventanas(turno_id,tipo,nombre,hora_apertura,hora_limite_puntual,hora_cierre,tolerancia_min,orden) VALUES(?,'clases','Clases tarde','12:00','12:49','18:10',10,2)",(tt["id"],))
@@ -346,7 +347,7 @@ def listar_ventanas(id_turno=None):
 
 def dia_especial_hoy(id_turno, fecha, id_seccion=None):
     con = obtener_conexion()
-    f = con.execute("SELECT * FROM dias_especiales WHERE fecha=? AND activo=1 AND (turno_id=? OR turno_id IS NULL) ORDER BY (turno_id IS NULL) ASC, turno_id DESC LIMIT 1",
+    f = con.execute("SELECT * FROM dias_especiales WHERE fecha=? AND activo=1 AND (turno_id=? OR turno_id IS NULL) ORDER BY turno_id DESC LIMIT 1",
                     (fecha, id_turno)).fetchone()
     if not f: return None
     dia = dict(f)
@@ -669,45 +670,21 @@ def _render_mensaje_qr(msg):
         elif acc == ACC_RETENIDO: mensaje += " &rarr; Retener hasta apoderado"; clase = "qr-retenido"
     st.markdown(f'<div class="qr-msg {clase}"><div class="qr-icono">{ic}</div><div class="qr-texto">{mensaje}</div></div>', unsafe_allow_html=True)
 
-
-def leer_qr(img):
-    try:
-        import cv2
-        arr = np.array(img.convert("RGB"))
-        gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
-        detector = cv2.QRCodeDetector()
-        variantes = [gray]
-        for escala in (1.5, 2.0, 3.0):
-            variantes.append(cv2.resize(gray, None, fx=escala, fy=escala, interpolation=cv2.INTER_CUBIC))
-        for base in list(variantes):
-            th = cv2.adaptiveThreshold(base, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 5)
-            variantes.append(th)
-        for base in list(variantes[:4]):
-            _, otsu = cv2.threshold(base, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            variantes.append(otsu)
-        for v in variantes:
-            data, _, _ = detector.detectAndDecode(v)
-            if data:
-                m = re.search(r"\b(\d{8})\b", data)
-                return m.group(1) if m else data.strip()
-    except Exception as e:
-        st.error(f"Error leyendo QR: {e}")
-    return None
-
-
 def escaner_qr_continuo(key="qr_scanner"):
-    st.markdown('<div class="scan-header"><div class="scan-titulo">Escaneo QR</div><div class="scan-sub">Toma una foto del codigo del alumno</div></div>', unsafe_allow_html=True)
-    img_file = st.camera_input("Escanea el QR", key=f"cam_{key}")
-    if img_file:
-        dni = leer_qr(Image.open(BytesIO(img_file.getvalue())))
-        if not dni:
-            st.error("No se detecto QR. Prueba con mejor luz o mas cerca.")
-        else:
-            _procesar_escaneo(dni)
+    st.markdown('<div class="scan-header"><div class="scan-titulo">Escaneo QR</div><div class="scan-sub">Apunta al codigo del alumno</div></div>', unsafe_allow_html=True)
+    qr_code = qrcode_scanner(key=f"qr_{key}")
+    if qr_code:
+        m = re.search(r"\b(\d{8})\b", str(qr_code))
+        if m:
+            dni = m.group(1)
+            ult = st.session_state.get("_ultimo_qr_scan", {})
+            if not (ult.get("dni") == dni and (time.time() - ult.get("ts", 0)) < 3):
+                st.session_state["_ultimo_qr_scan"] = {"dni": dni, "ts": time.time()}
+                _procesar_escaneo(dni)
     if st.session_state.get("_qr_mensajes"):
         st.markdown('<div class="scan-ultimos">Ultimos escaneos</div>', unsafe_allow_html=True)
-        for msg in st.session_state["_qr_mensajes"][:5]: _render_mensaje_qr(msg)
-
+        for msg in st.session_state["_qr_mensajes"][:5]:
+            _render_mensaje_qr(msg)
 
 # ---------- REPORTES ----------
 def metricas_dia(fecha, pid=None):
