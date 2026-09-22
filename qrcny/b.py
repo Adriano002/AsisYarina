@@ -226,9 +226,8 @@ def vista_mantenimiento():
         st.rerun()
 
 # ---------- SESIÓN (CORREGIDO) ----------
-@st.cache_resource
 def _cookie_mgr():
-    """CookieManager cacheado. Se monta UNA sola vez por sesión del navegador."""
+    """Devuelve la instancia del CookieManager. NO se cachea porque es un widget."""
     return stx.CookieManager(key=COOKIE_KEY)
 
 def crear_token_sesion(usuario):
@@ -257,27 +256,27 @@ def _leer_query():
     except Exception: return None
 
 def _leer_cookie():
-    """Lee la cookie intentando primero con CookieManager (más fiable) y luego con st.context."""
+    """Lee la cookie. Primero st.context (headers HTTP), luego CookieManager."""
     try:
-        c = _cookie_mgr()
-        val = c.get(COOKIE_NOM)
+        val = st.context.cookies.get(COOKIE_NOM)
         if val: return val
-    except Exception as e:
-        log.warning("leer cookie (mgr): %s", e)
-
+    except Exception:
+        pass
     try:
-        return st.context.cookies.get(COOKIE_NOM)
-    except Exception as e:
-        log.warning("leer cookie (ctx): %s", e)
-        return None
+        val = _cookie_mgr().get(COOKIE_NOM)
+        if val: return val
+    except Exception:
+        pass
+    return None
 
 def _guardar_cookie(token):
-    """Guarda la cookie. Espera un poco para que el componente se monte."""
+    """Guarda la cookie usando CookieManager."""
     try:
-        c = _cookie_mgr()
-        c.set(COOKIE_NOM, token,
-              expires_at=datetime.now()+timedelta(days=DIAS_TOKEN))
-        time.sleep(0.3)
+        _cookie_mgr().set(
+            COOKIE_NOM,
+            token,
+            expires_at=datetime.now() + timedelta(days=DIAS_TOKEN),
+        )
     except Exception as e:
         log.warning("guardar cookie: %s", e)
 
@@ -301,10 +300,10 @@ def inicializar_sesion():
         else:
             st.session_state.pop("_token", None)
 
-    # 2. cookie (CookieManager primero, luego st.context)
+    # 2. cookie
     token = _leer_cookie()
 
-    # 3. query param (respaldo)
+    # 3. query param
     if not token:
         token = _leer_query()
 
@@ -314,11 +313,6 @@ def inicializar_sesion():
             st.session_state["user"] = u
             st.session_state["_token"] = token
             st.session_state["_token_expira"] = time.time()+300
-            # Refrescar cookie por si acaso
-            try:
-                _guardar_cookie(token)
-            except Exception:
-                pass
 
 def refrescar_sesion_si_necesario():
     """Refresca el token cuando queda poco tiempo. No borra el viejo hasta tener el nuevo."""
@@ -331,7 +325,6 @@ def refrescar_sesion_si_necesario():
         st.session_state["_token"] = nuevo
         st.session_state["_token_expira"] = time.time()+300
         _guardar_cookie(nuevo)
-        # Solo borrar el viejo después de guardar el nuevo
         if viejo:
             try:
                 eliminar_token(viejo)
@@ -1371,27 +1364,6 @@ def filtros_grado_seccion_nombre(clave, placeholder="Buscar"):
     with c3:
         t = st.text_input("Buscar", placeholder=placeholder, key=f"{clave}_t")
     return (g["id"] if g else None, s["id"] if (g and g["id"] and s) else None, t.strip())
-
-# ---------- DEBUG COOKIES (opcional) ----------
-def debug_cookies():
-    with st.sidebar.expander("Debug cookies", expanded=False):
-        st.write("**st.context.cookies:**")
-        try:
-            st.write(dict(st.context.cookies))
-        except Exception as e:
-            st.write(f"Error: {e}")
-        st.write("**CookieManager.get_all():**")
-        try:
-            st.write(_cookie_mgr().get_all())
-        except Exception as e:
-            st.write(f"Error: {e}")
-        st.write("**query_params:**")
-        try:
-            st.write(dict(st.query_params))
-        except Exception as e:
-            st.write(f"Error: {e}")
-        st.write("**session_state (tokens):**")
-        st.write({k: v for k, v in st.session_state.items() if k.startswith("_")})
 
 # ---------- LOGIN ----------
 def vista_login():
