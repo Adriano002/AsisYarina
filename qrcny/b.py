@@ -132,6 +132,7 @@ def inicializar_bd():
     CREATE TABLE IF NOT EXISTS auditoria(id INTEGER PRIMARY KEY,usuario TEXT,accion TEXT,fecha TEXT,valor_anterior TEXT,valor_nuevo TEXT,tabla_afectada TEXT,registro_id INTEGER,ip TEXT);
     CREATE TABLE IF NOT EXISTS sesiones_tokens(id INTEGER PRIMARY KEY,token TEXT UNIQUE NOT NULL,usuario_id INTEGER NOT NULL,expira TEXT NOT NULL,creado TEXT DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE IF NOT EXISTS cierres_anuales(id INTEGER PRIMARY KEY,periodo_id INTEGER NOT NULL,fecha_cierre TEXT NOT NULL,generado_por TEXT,reporte_json TEXT);
+    CREATE TABLE IF NOT EXISTS config(id INTEGER PRIMARY KEY,clave TEXT UNIQUE NOT NULL,valor TEXT);
     CREATE INDEX IF NOT EXISTS idx_ast_f ON asistencias(fecha);
     CREATE INDEX IF NOT EXISTS idx_ast_a ON asistencias(alumno_id);
     CREATE INDEX IF NOT EXISTS idx_tard_a ON tardanzas(alumno_id);
@@ -185,8 +186,50 @@ def _seed(cur):
                     ("admin", hashear_password(pwd)))
         log.warning("Usuario admin creado. Password temporal: %s", pwd)
 
-# ---------- SESIÓN ----------
-def _cookie_mgr(): return stx.CookieManager(key=COOKIE_KEY)
+# ---------- MODO MANTENIMIENTO ----------
+def modo_mantenimiento():
+    con = obtener_conexion()
+    f = con.execute("SELECT valor FROM config WHERE clave='mantenimiento'").fetchone()
+    return bool(f and f["valor"] == "1")
+
+def activar_mantenimiento(usuario, mensaje=""):
+    con = obtener_conexion()
+    con.execute("INSERT OR REPLACE INTO config(clave,valor) VALUES('mantenimiento','1')")
+    con.execute("INSERT OR REPLACE INTO config(clave,valor) VALUES('mantenimiento_msg',?)", (mensaje or "",))
+    con.commit()
+    auditar(usuario["usuario"], f"Activo modo mantenimiento: {mensaje}")
+
+def desactivar_mantenimiento(usuario):
+    con = obtener_conexion()
+    con.execute("INSERT OR REPLACE INTO config(clave,valor) VALUES('mantenimiento','0')")
+    con.commit()
+    auditar(usuario["usuario"], "Desactivo modo mantenimiento")
+
+def mensaje_mantenimiento():
+    con = obtener_conexion()
+    f = con.execute("SELECT valor FROM config WHERE clave='mantenimiento_msg'").fetchone()
+    return f["valor"] if f else ""
+
+def vista_mantenimiento():
+    st.markdown("""
+    <div style="text-align:center; margin-top:100px;">
+        <h1 style="font-size:60px;">🔧</h1>
+        <h1 style="font-size:32px;">Sistema en mantenimiento</h1>
+        <p style="font-size:16px; opacity:0.7;">Estamos trabajando para mejorar el servicio. Vuelve en unos minutos.</p>
+    </div>
+    """, unsafe_allow_html=True)
+    msg = mensaje_mantenimiento()
+    if msg:
+        st.info(f"**Mensaje del Administrador:** {msg}")
+    if st.button("Cerrar sesión", use_container_width=True):
+        cerrar_sesion()
+        st.rerun()
+
+# ---------- SESIÓN (CORREGIDO) ----------
+@st.cache_resource
+def _cookie_mgr():
+    """CookieManager cacheado. Se monta UNA sola vez por sesión del navegador."""
+    return stx.CookieManager(key=COOKIE_KEY)
 
 def crear_token_sesion(usuario):
     token = secrets.token_urlsafe(32); th = hash_token(token)
@@ -209,49 +252,93 @@ def eliminar_token(token):
     con = obtener_conexion()
     con.execute("DELETE FROM sesiones_tokens WHERE token=?", (hash_token(token),)); con.commit()
 
-def _leer_cookie():
-    try: return st.context.cookies.get(COOKIE_NOM)
-    except Exception: return None
-
 def _leer_query():
     try: return st.query_params.get("t")
     except Exception: return None
 
-def _guardar_cookie(token):
+def _leer_cookie():
+    """Lee la cookie intentando primero con CookieManager (más fiable) y luego con st.context."""
     try:
         c = _cookie_mgr()
-        c.set(COOKIE_NOM, token, expires_at=datetime.now()+timedelta(days=DIAS_TOKEN))
-    except Exception as e: log.warning("cookie: %s", e)
+        val = c.get(COOKIE_NOM)
+        if val: return val
+    except Exception as e:
+        log.warning("leer cookie (mgr): %s", e)
+
+    try:
+        return st.context.cookies.get(COOKIE_NOM)
+    except Exception as e:
+        log.warning("leer cookie (ctx): %s", e)
+        return None
+
+def _guardar_cookie(token):
+    """Guarda la cookie. Espera un poco para que el componente se monte."""
+    try:
+        c = _cookie_mgr()
+        c.set(COOKIE_NOM, token,
+              expires_at=datetime.now()+timedelta(days=DIAS_TOKEN))
+        time.sleep(0.3)
+    except Exception as e:
+        log.warning("guardar cookie: %s", e)
 
 def _borrar_cookie():
-    try: _cookie_mgr().delete(COOKIE_NOM)
-    except Exception as e: log.warning("cookie: %s", e)
+    try:
+        _cookie_mgr().delete(COOKIE_NOM)
+    except Exception as e:
+        log.warning("borrar cookie: %s", e)
 
 def inicializar_sesion():
+    """Lee el token de 3 fuentes: session_state, cookie, query param."""
     if st.session_state.get("user"): return
+
+    # 1. session_state
+    token = st.session_state.get("_token")
+    if token:
+        u = restaurar_sesion(token)
+        if u:
+            st.session_state["user"] = u
+            return
+        else:
+            st.session_state.pop("_token", None)
+
+    # 2. cookie (CookieManager primero, luego st.context)
     token = _leer_cookie()
+
+    # 3. query param (respaldo)
     if not token:
-        try: token = _cookie_mgr().get(COOKIE_NOM)
-        except Exception: token = None
-    if not token: token = _leer_query()
+        token = _leer_query()
+
     if token:
         u = restaurar_sesion(token)
         if u:
             st.session_state["user"] = u
             st.session_state["_token"] = token
             st.session_state["_token_expira"] = time.time()+300
+            # Refrescar cookie por si acaso
+            try:
+                _guardar_cookie(token)
+            except Exception:
+                pass
 
 def refrescar_sesion_si_necesario():
+    """Refresca el token cuando queda poco tiempo. No borra el viejo hasta tener el nuevo."""
     if not st.session_state.get("user"): return
     if time.time() < st.session_state.get("_token_expira", 0) - 60: return
     try:
-        u = st.session_state["user"]; viejo = st.session_state.get("_token")
-        if viejo: eliminar_token(viejo)
+        u = st.session_state["user"]
+        viejo = st.session_state.get("_token")
         nuevo = crear_token_sesion(u)
         st.session_state["_token"] = nuevo
         st.session_state["_token_expira"] = time.time()+300
         _guardar_cookie(nuevo)
-    except Exception as e: log.warning("refresh sesion: %s", e)
+        # Solo borrar el viejo después de guardar el nuevo
+        if viejo:
+            try:
+                eliminar_token(viejo)
+            except Exception as e:
+                log.warning("eliminar token viejo: %s", e)
+    except Exception as e:
+        log.warning("refresh sesion: %s", e)
 
 # ---------- AUTH ----------
 def _bloqueado(u):
@@ -688,7 +775,6 @@ def escaner_qr_continuo(key="qr_scanner"):
 
 # ---------- REPORTES ----------
 def metricas_dia(fecha, pid=None):
-    """Métricas del día. Todas leen de `asistencias` para evitar desincronización."""
     con = obtener_conexion()
 
     total = con.execute("SELECT COUNT(*) FROM alumnos WHERE activo=1").fetchone()[0]
@@ -815,7 +901,7 @@ def perfil_alumno_datos(idal):
                     (idal,)).fetchone()
     if not a: return {}
     a = dict(a)
-    da = pd.read_sql("SELECT fecha,hora,tipo,estado,justificada,COALESCE(observacion,'') AS observacion FROM asistencias WHERE alumno_id=? ORDER BY fecha DESC,hora DESC", con, params=[idal])
+    da = pd.read_sql("SELECT id,fecha,hora,tipo,estado,justificada,COALESCE(observacion,'') AS observacion FROM asistencias WHERE alumno_id=? ORDER BY fecha DESC,hora DESC", con, params=[idal])
     dt = pd.read_sql("SELECT fecha,hora,numero AS 'N',accion,justificada,COALESCE(observacion,'') AS observacion FROM tardanzas WHERE alumno_id=? ORDER BY fecha DESC,hora DESC", con, params=[idal])
     do = pd.read_sql("SELECT fecha_ingreso,COALESCE(fecha_salida,'-') AS fecha_salida,COALESCE(motivo,'') AS motivo,activo FROM observados WHERE alumno_id=? ORDER BY fecha_ingreso DESC", con, params=[idal])
     dac = pd.read_sql("SELECT fecha,COALESCE(motivo,'') AS motivo,COALESCE(observacion,'') AS observacion,COALESCE(registrado_por,'') AS registrado_por FROM actas_compromiso WHERE alumno_id=? ORDER BY fecha DESC", con, params=[idal])
@@ -969,6 +1055,79 @@ def pdf_carnet_alumno(dni):
                     (dni,)).fetchall()
     return _render_carnets(f) if f else None
 
+def pdf_resumen_alumno(idal):
+    d = perfil_alumno_datos(idal)
+    if not d: return None
+    al = d["alumno"]
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    est = getSampleStyleSheet()
+    el = []
+
+    el.append(Paragraph(f"<b>Reporte de Asistencia</b>", est["Heading1"]))
+    el.append(Paragraph("I.E. Yarinacocha", est["Normal"]))
+    el.append(Spacer(1, 20))
+
+    nombre = f"{al['apellido_paterno']} {al['apellido_materno'] or ''}, {al['nombres']}"
+    el.append(Paragraph(f"<b>Alumno:</b> {nombre}", est["Normal"]))
+    el.append(Paragraph(f"<b>DNI:</b> {al['dni']}", est["Normal"]))
+    el.append(Paragraph(f"<b>Grado:</b> {al['grado']} {al['seccion']} — {al['turno']}", est["Normal"]))
+    el.append(Paragraph(f"<b>Apoderado:</b> {al['nombre_apoderado'] or '-'}", est["Normal"]))
+    el.append(Paragraph(f"<b>Telefono:</b> {al['telefono_apoderado'] or '-'}", est["Normal"]))
+    el.append(Spacer(1, 15))
+
+    el.append(Paragraph("<b>Resumen</b>", est["Heading2"]))
+    resumen = [
+        ["Puntuales", "Tardanzas", "Faltas", "Reforzamiento", "Tard. injust."],
+        [d["total_puntuales"], d["total_tardanzas"], d["total_faltas"], d["total_ref_asistio"], d["tard_injust"]]
+    ]
+    t = Table(resumen)
+    t.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,0),colors.HexColor(C_NARANJA)),
+        ("TEXTCOLOR",(0,0),(-1,0),colors.whitesmoke),
+        ("ALIGN",(0,0),(-1,-1),"CENTER"),
+        ("GRID",(0,0),(-1,-1),0.5,colors.grey),
+    ]))
+    el.append(t)
+    el.append(Spacer(1, 20))
+
+    el.append(Paragraph("<b>Ultimas asistencias</b>", est["Heading2"]))
+    if not d["asistencias"].empty:
+        datos = [["Fecha", "Hora", "Tipo", "Estado", "Justificada"]]
+        for _, r in d["asistencias"].head(30).iterrows():
+            datos.append([r["fecha"], r["hora"] or "-", r["tipo"], r["estado"], "Si" if r["justificada"] else "No"])
+        t2 = Table(datos, repeatRows=1)
+        t2.setStyle(TableStyle([
+            ("BACKGROUND",(0,0),(-1,0),colors.HexColor(C_NARANJA)),
+            ("TEXTCOLOR",(0,0),(-1,0),colors.whitesmoke),
+            ("GRID",(0,0),(-1,-1),0.3,colors.grey),
+            ("FONTSIZE",(0,0),(-1,-1),8),
+        ]))
+        el.append(t2)
+
+    if not d["tardanzas"].empty:
+        el.append(Spacer(1, 20))
+        el.append(Paragraph("<b>Tardanzas registradas</b>", est["Heading2"]))
+        datos = [["Fecha", "Hora", "N", "Accion", "Justificada"]]
+        for _, r in d["tardanzas"].iterrows():
+            datos.append([r["fecha"], r["hora"], r["N"], r["accion"], "Si" if r["justificada"] else "No"])
+        t3 = Table(datos, repeatRows=1)
+        t3.setStyle(TableStyle([
+            ("BACKGROUND",(0,0),(-1,0),colors.HexColor(C_NARANJA)),
+            ("TEXTCOLOR",(0,0),(-1,0),colors.whitesmoke),
+            ("GRID",(0,0),(-1,-1),0.3,colors.grey),
+            ("FONTSIZE",(0,0),(-1,-1),8),
+        ]))
+        el.append(t3)
+
+    el.append(Spacer(1, 30))
+    el.append(Paragraph(f"Generado: {ahora().strftime('%Y-%m-%d %H:%M')}", est["Normal"]))
+
+    doc.build(el)
+    buf.seek(0)
+    return buf.getvalue()
+
 def df_a_xlsx(df, hoja="Datos"):
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as w: df.to_excel(w, index=False, sheet_name=hoja)
@@ -979,7 +1138,6 @@ def df_a_xlsx_multilhoja(hojas):
     with pd.ExcelWriter(buf, engine="openpyxl") as w:
         for n, df in hojas.items(): df.to_excel(w, index=False, sheet_name=n[:31])
     buf.seek(0); return buf.getvalue()
-
 
 # ---------- CSS + ESTILOS ----------
 def aplicar_estilos():
@@ -1214,6 +1372,27 @@ def filtros_grado_seccion_nombre(clave, placeholder="Buscar"):
         t = st.text_input("Buscar", placeholder=placeholder, key=f"{clave}_t")
     return (g["id"] if g else None, s["id"] if (g and g["id"] and s) else None, t.strip())
 
+# ---------- DEBUG COOKIES (opcional) ----------
+def debug_cookies():
+    with st.sidebar.expander("Debug cookies", expanded=False):
+        st.write("**st.context.cookies:**")
+        try:
+            st.write(dict(st.context.cookies))
+        except Exception as e:
+            st.write(f"Error: {e}")
+        st.write("**CookieManager.get_all():**")
+        try:
+            st.write(_cookie_mgr().get_all())
+        except Exception as e:
+            st.write(f"Error: {e}")
+        st.write("**query_params:**")
+        try:
+            st.write(dict(st.query_params))
+        except Exception as e:
+            st.write(f"Error: {e}")
+        st.write("**session_state (tokens):**")
+        st.write({k: v for k, v in st.session_state.items() if k.startswith("_")})
+
 # ---------- LOGIN ----------
 def vista_login():
     st.markdown("""
@@ -1268,6 +1447,45 @@ def vista_cambio_password_obligatorio():
                 st.session_state["user"]["debe_cambiar_password"] = 0
                 auditar(usuario["usuario"], "Cambio pwd obligatorio")
                 st.rerun()
+
+# ---------- MI CUENTA ----------
+def vista_mi_cuenta():
+    st.title("Mi cuenta")
+    usuario = st.session_state["user"]
+
+    st.subheader("Informacion")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Usuario", usuario["usuario"])
+    c2.metric("Rol", usuario["rol"])
+    c3.metric("Nombres", usuario["nombres"])
+
+    st.markdown("---")
+    st.subheader("Cambiar contrasena")
+    with st.form("cambiar_mi_pwd"):
+        actual = st.text_input("Contrasena actual", type="password")
+        nueva = st.text_input("Nueva contrasena", type="password")
+        confirmar = st.text_input("Confirmar nueva contrasena", type="password")
+        if st.form_submit_button("Cambiar contrasena", type="primary"):
+            if not verificar_password(actual, usuario["password"]):
+                st.error("Contrasena actual incorrecta.")
+            elif len(nueva) < 6:
+                st.error("La nueva contrasena debe tener al menos 6 caracteres.")
+            elif nueva != confirmar:
+                st.error("Las contrasenas no coinciden.")
+            else:
+                nueva_hash = hashear_password(nueva)
+                con = obtener_conexion()
+                con.execute("UPDATE usuarios SET password=? WHERE id=?", (nueva_hash, usuario["id"]))
+                con.commit()
+                st.session_state["user"]["password"] = nueva_hash
+                auditar(usuario["usuario"], "Cambio su contrasena")
+                st.success("Contrasena actualizada correctamente.")
+
+    st.markdown("---")
+    st.subheader("Cerrar sesion en este dispositivo")
+    if st.button("Cerrar sesion"):
+        cerrar_sesion()
+        st.rerun()
 
 # ---------- PUERTA ----------
 def vista_puerta():
@@ -1637,19 +1855,23 @@ def _perfil_alumno(idal):
         """, unsafe_allow_html=True)
     with c_qr:
         st.markdown("**Codigo QR**"); st.image(generar_qr(al["dni"]), width=180)
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     with c1:
         pdf = pdf_carnet_alumno(al["dni"])
         if pdf: st.download_button("Descargar carnet QR", pdf, f"carnet_{al['dni']}.pdf", "application/pdf", use_container_width=True)
     with c2:
         st.download_button("Historial (Excel)", df_a_xlsx(d["asistencias"], "Historial"), f"historial_{al['dni']}.xlsx", use_container_width=True)
+    with c3:
+        pdf_res = pdf_resumen_alumno(al["id"])
+        if pdf_res: st.download_button("Resumen (PDF)", pdf_res, f"resumen_{al['dni']}.pdf", "application/pdf", use_container_width=True)
     if usuario["rol"] == "Admin":
         st.markdown("---")
         if al.get("activo", 1) == 1:
             with st.expander("Desactivar alumno"):
                 st.warning("Estas seguro que desea desactivar al alumno?")
+                confirmar = st.checkbox("Confirmo que quiero desactivar al alumno", key="conf_desac")
                 pwd = st.text_input("Ingrese su contrasena de Admin", type="password", key="pwd_desac")
-                if st.button("Confirmar desactivacion", type="primary", key="btn_desac"):
+                if st.button("Confirmar desactivacion", type="primary", key="btn_desac", disabled=not confirmar):
                     if not pwd: st.error("Ingrese su contrasena.")
                     elif not verificar_password_admin(pwd): st.error("Contrasena incorrecta.")
                     else:
@@ -1657,8 +1879,9 @@ def _perfil_alumno(idal):
         else:
             with st.expander("Reactivar alumno"):
                 st.info("Estas seguro que desea reactivar al alumno?")
+                confirmar = st.checkbox("Confirmo que quiero reactivar al alumno", key="conf_react")
                 pwd = st.text_input("Ingrese su contrasena de Admin", type="password", key="pwd_react")
-                if st.button("Confirmar reactivacion", type="primary", key="btn_react"):
+                if st.button("Confirmar reactivacion", type="primary", key="btn_react", disabled=not confirmar):
                     if not pwd: st.error("Ingrese su contrasena.")
                     elif not verificar_password_admin(pwd): st.error("Contrasena incorrecta.")
                     else:
@@ -1666,8 +1889,20 @@ def _perfil_alumno(idal):
     st.markdown("---")
     tabs = st.tabs(["Asistencias", "Tardanzas", "Actas", "Observados", "Bloqueos", "Just. previas"])
     with tabs[0]:
-        if d["asistencias"].empty: st.info("Sin asistencias registradas.")
-        else: st.dataframe(d["asistencias"], use_container_width=True)
+        if d["asistencias"].empty:
+            st.info("Sin asistencias registradas.")
+        else:
+            st.write("**Asistencias registradas** (marca las que quieras justificar)")
+            for _, ast in d["asistencias"].head(50).iterrows():
+                c1, c2, c3, c4 = st.columns([2, 3, 2, 1])
+                c1.write(f"**{ast['fecha']}** {ast['hora'] or ''}")
+                c2.write(f"{ast['tipo']} — {ast['estado']}")
+                c3.write("Justificada" if ast["justificada"] else "Sin justificar")
+                if c4.button("Quitar" if ast["justificada"] else "Justificar", key=f"just_{ast['id']}"):
+                    ok, msg = justificar_asistencia(ast["id"], not ast["justificada"], "", usuario)
+                    if ok:
+                        st.toast(msg)
+                        st.rerun()
     with tabs[1]:
         if d["tardanzas"].empty: st.info("Sin tardanzas registradas.")
         else: st.dataframe(d["tardanzas"], use_container_width=True)
@@ -1764,7 +1999,7 @@ def vista_ventanas():
 def vista_usuarios():
     st.title("Usuarios")
     usuario = st.session_state["user"]; con = obtener_conexion()
-    tabs = st.tabs(["Listar", "Crear", "Editar", "Asignar secciones"])
+    tabs = st.tabs(["Listar", "Crear", "Editar", "Asignar secciones", "Mantenimiento"])
     with tabs[0]:
         st.dataframe(pd.read_sql("SELECT id,usuario,rol,nombres,activo,ultimo_login FROM usuarios ORDER BY usuario", con), use_container_width=True)
     with tabs[1]:
@@ -1827,6 +2062,21 @@ def vista_usuarios():
             for sid in sel_s: con.execute("INSERT INTO auxiliar_secciones(usuario_id,seccion_id) VALUES(?,?)", (ida, sid))
             con.commit(); auditar(usuario["usuario"], f"Asigno {len(sel_s)} secciones a usuario_id={ida}")
             st.toast("Asignaciones guardadas correctamente"); st.rerun()
+    with tabs[4]:
+        st.subheader("Modo mantenimiento")
+        st.caption("Cuando el modo mantenimiento esta activo, solo los Admin pueden entrar al sistema. Los demas veran una pantalla de mantenimiento.")
+        if modo_mantenimiento():
+            st.error("El sistema esta en MANTENIMIENTO.")
+            if st.button("Desactivar mantenimiento", type="primary"):
+                desactivar_mantenimiento(usuario)
+                st.toast("Modo mantenimiento desactivado"); st.rerun()
+        else:
+            st.success("El sistema esta operativo.")
+            msg = st.text_input("Mensaje para mostrar a los usuarios (opcional)", key="mant_msg")
+            confirmar = st.checkbox("Confirmo activar modo mantenimiento", key="conf_mant")
+            if st.button("Activar mantenimiento", type="primary", disabled=not confirmar):
+                activar_mantenimiento(usuario, msg)
+                st.toast("Modo mantenimiento activado"); st.rerun()
 
 # ---------- AUDITORIA ----------
 def _frag_importar_excel():
@@ -2011,23 +2261,25 @@ def vista_dias_especiales():
             st.dataframe(df, use_container_width=True)
             ops = {f"{r['fecha']} - {r['descripcion']} ({r['tipo']})": r["id"] for _, r in df.iterrows()}
             sel = st.selectbox("Eliminar", list(ops.keys()))
-            if st.button("Eliminar", type="primary"):
+            st.warning("Esta accion es irreversible.")
+            confirmar = st.checkbox("Confirmo que quiero eliminar este dia especial", key="conf_dia_del")
+            if st.button("Eliminar", type="primary", disabled=not confirmar):
                 con.execute("DELETE FROM dias_especiales WHERE id=?", (ops[sel],)); con.commit()
                 auditar(usuario["usuario"], f"Elimino dia especial id={ops[sel]}")
                 st.toast("Dia especial eliminado correctamente"); st.rerun()
 
 # ---------- MENU / RUTAS / MAIN ----------
 OPCIONES_POR_ROL = {
-    "Admin": ["Puerta","TOECE","Panel Direccion","Reportes","Alumnos","Grados y Secciones","Carnets","Dias especiales","Ventanas","Usuarios","Auditoria"],
-    "TOECE": ["Puerta","TOECE","Reportes","Dias especiales"],
-    "Direccion": ["Puerta","TOECE","Panel Direccion","Reportes","Carnets","Auditoria"],
-    "Auxiliar": ["Puerta","Reportes"],
+    "Admin": ["Puerta","TOECE","Panel Direccion","Reportes","Alumnos","Grados y Secciones","Carnets","Dias especiales","Ventanas","Usuarios","Auditoria","Mi cuenta"],
+    "TOECE": ["Puerta","TOECE","Reportes","Dias especiales","Mi cuenta"],
+    "Direccion": ["Puerta","TOECE","Panel Direccion","Reportes","Carnets","Auditoria","Mi cuenta"],
+    "Auxiliar": ["Puerta","Reportes","Mi cuenta"],
 }
 RUTAS = {
     "Puerta": vista_puerta, "TOECE": vista_toece, "Panel Direccion": vista_panel_direccion,
     "Reportes": vista_reportes, "Alumnos": vista_alumnos, "Grados y Secciones": vista_grados_secciones,
     "Carnets": vista_carnets, "Dias especiales": vista_dias_especiales, "Ventanas": vista_ventanas,
-    "Usuarios": vista_usuarios, "Auditoria": vista_auditoria,
+    "Usuarios": vista_usuarios, "Auditoria": vista_auditoria, "Mi cuenta": vista_mi_cuenta,
 }
 
 def menu_lateral():
@@ -2036,6 +2288,20 @@ def menu_lateral():
     with st.sidebar:
         inicial = (usuario["nombres"] or "?")[0].upper()
         st.markdown(f'<div class="encabezado-sidebar"><div class="avatar">{inicial}</div><div class="nombre">{usuario["nombres"]}</div><div class="rol">{rol}</div></div>', unsafe_allow_html=True)
+
+        with st.expander("Buscar alumno", expanded=False):
+            q = st.text_input("Nombre o DNI", key="global_search")
+            if q and len(q) >= 3:
+                df_gs = buscar_alumnos(texto=q, limite=10)
+                if df_gs.empty:
+                    st.caption("Sin resultados")
+                else:
+                    for _, al in df_gs.iterrows():
+                        if st.button(f"{al['nombre_completo']} ({al['grado']} {al['seccion']})", key=f"gs_{al['id']}"):
+                            st.session_state["perfil_alumno_id"] = al["id"]
+                            st.session_state["menu"] = "Alumnos"
+                            st.rerun()
+
         if "menu" not in st.session_state or st.session_state["menu"] not in opciones:
             st.session_state["menu"] = opciones[0]
         op = st.radio("Menu", opciones, key="menu", label_visibility="collapsed")
@@ -2066,26 +2332,39 @@ def _control_faltas():
 
 def main():
     st.set_page_config(page_title="Asistencia I.E. Yarinacocha", page_icon="escudo.png", layout="wide", initial_sidebar_state="expanded")
-    inicializar_bd()
-    aplicar_estilos()
-    inicializar_sesion()
-    if not st.session_state.get("user"):
-        vista_login(); return
-    refrescar_sesion_si_necesario()
-    if st.session_state["user"].get("debe_cambiar_password"):
-        vista_cambio_password_obligatorio(); return
-    if sistema_bloqueado():
-        st.warning("El sistema no esta configurado. No hay periodo activo con alumnos cargados.")
-        if st.session_state["user"]["rol"] == "Admin":
-            st.info("Ve a **Auditoria → Periodos** para crear un periodo y subir el Excel de alumnos.")
-            st.session_state["menu"] = "Auditoria"
-            _enrutar("Auditoria", st.session_state["user"])
-        else:
-            st.info("Contacta al Administrador para que configure el periodo.")
-        return
-    _control_faltas()
-    op = menu_lateral()
-    if op: _enrutar(op, st.session_state["user"])
+
+    try:
+        inicializar_bd()
+        aplicar_estilos()
+        inicializar_sesion()
+        if not st.session_state.get("user"):
+            vista_login(); return
+        refrescar_sesion_si_necesario()
+        if st.session_state["user"].get("debe_cambiar_password"):
+            vista_cambio_password_obligatorio(); return
+        if modo_mantenimiento() and st.session_state["user"]["rol"] != "Admin":
+            vista_mantenimiento(); return
+        if sistema_bloqueado():
+            st.warning("El sistema no esta configurado. No hay periodo activo con alumnos cargados.")
+            if st.session_state["user"]["rol"] == "Admin":
+                st.info("Ve a **Auditoria → Periodos** para crear un periodo y subir el Excel de alumnos.")
+                st.session_state["menu"] = "Auditoria"
+                _enrutar("Auditoria", st.session_state["user"])
+            else:
+                st.info("Contacta al Administrador para que configure el periodo.")
+            return
+        _control_faltas()
+        op = menu_lateral()
+        if op: _enrutar(op, st.session_state["user"])
+
+    except sqlite3.OperationalError as e:
+        st.error(f"Error de base de datos: {e}")
+        st.info("Verifica que el archivo `asistencia.db` no este bloqueado por otro proceso.")
+        log.exception("Error de BD en main")
+    except Exception as e:
+        st.error(f"Error inesperado: {e}")
+        st.info("El error quedo registrado en `logs/app.log`. Contacta al Administrador.")
+        log.exception("Error en main")
 
 if __name__ == "__main__":
     main()
