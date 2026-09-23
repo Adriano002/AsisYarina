@@ -1,6 +1,3 @@
-# ============================================================
-# ASISTENCIA I.E. YARINACOCHA - Compacto v4.0
-# ============================================================
 import hashlib, logging, os, re, secrets, sqlite3, threading, time
 from calendar import monthrange
 from datetime import date, datetime, timedelta, timezone
@@ -20,9 +17,8 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import (Image as RLImage, PageBreak, Paragraph,
                                  SimpleDocTemplate, Spacer, Table, TableStyle)
-from streamlit_qrcode_scanner import qrcode_scanner
+from streamlit_qrcode_scanner import 
 
-# ---------- LOGS ----------
 LOG_DIR = Path("logs"); LOG_DIR.mkdir(exist_ok=True)
 logging.basicConfig(level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -30,7 +26,6 @@ logging.basicConfig(level=logging.INFO,
               logging.StreamHandler()])
 log = logging.getLogger("asistencia")
 
-# ---------- CONFIG ----------
 DB_PATH = "asistencia.db"
 MESES_ES = ["","Enero","Febrero","Marzo","Abril","Mayo","Junio",
             "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
