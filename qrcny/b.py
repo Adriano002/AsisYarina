@@ -424,7 +424,6 @@ def activar_periodo(idp, usuario):
     auditar(usuario["usuario"], f"Activo periodo id={idp}", tb="periodos", rid=idp)
     return True, "Periodo activado correctamente."
 
-# ---------- VENTANAS ----------
 def listar_turnos():
     con = obtener_conexion()
     return [dict(f) for f in con.execute("SELECT * FROM turnos ORDER BY id").fetchall()]
@@ -459,7 +458,6 @@ def ventana_activa_para_alumno(id_turno, fecha, id_seccion=None):
             return {**v, "hora_apertura_efectiva": ap, "hora_limite_efectiva": lim}
     return None
 
-# ---------- ALUMNOS ----------
 def listar_grados():
     con = obtener_conexion()
     return [dict(f) for f in con.execute("SELECT * FROM grados ORDER BY nombre").fetchall()]
@@ -545,7 +543,6 @@ def reactivar_alumno(idal, dni, usuario):
     auditar(usuario["usuario"], f"Reactivo alumno DNI {dni}", tb="alumnos", rid=idal)
     return True, "Alumno reactivado correctamente."
 
-# ---------- IMPORT EXCEL ----------
 def _normalizar_grado(n):
     n = (n or "").strip().title()
     r = {"1°":"1ro","2°":"2do","3°":"3ro","4°":"4to","5°":"5to",
@@ -615,7 +612,6 @@ def insertar_alumnos_validos(val):
     con.commit()
     return ins, reac, errs
 
-# ---------- BLOQUEOS ----------
 def alumno_bloqueado(idal):
     con = obtener_conexion()
     f = con.execute("SELECT * FROM bloqueos WHERE alumno_id=? AND activo=1 ORDER BY id DESC LIMIT 1", (idal,)).fetchone()
@@ -633,7 +629,6 @@ def liberar_bloqueo(idal, usuario, obs=""):
                 (timestamp_str(), usuario["usuario"], idal)); con.commit()
     auditar(usuario["usuario"], f"Libero bloqueo alumno_id={idal}. Obs: {obs}", tb="bloqueos", rid=idal)
 
-# ---------- ASISTENCIA ----------
 def contar_tardanzas_injustificadas(idal, pid=None):
     con = obtener_conexion()
     q = "SELECT COUNT(*) FROM tardanzas WHERE alumno_id=? AND justificada=0"; p = [idal]
@@ -775,8 +770,6 @@ def escaner_qr_continuo(key="qr_scanner"):
         st.markdown('<div class="scan-ultimos">Ultimos escaneos</div>', unsafe_allow_html=True)
         for msg in st.session_state["_qr_mensajes"][:5]:
             _render_mensaje_qr(msg)
-
-# ---------- REPORTES ----------
 def metricas_dia(fecha, pid=None):
     con = obtener_conexion()
 
