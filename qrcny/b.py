@@ -2081,9 +2081,13 @@ def _frag_crear_alumno():
             nom = st.text_input("Nombres *"); pat = st.text_input("Apellido Paterno *")
         with c2:
             mat = st.text_input("Apellido Materno")
-            g = st.selectbox("Grado *", grados, format_func=lambda x: x["nombre"])
+            g = st.selectbox("Grado *", grados, format_func=lambda x: x["nombre"], key="crear_al_g")
             secs = secciones_por_grado(g["id"]) if g else []
-            s = st.selectbox("Seccion *", secs, format_func=lambda x: x["nombre"]) if secs else None
+            s = st.selectbox(
+                "Seccion *", secs,
+                format_func=lambda x: x["nombre"],
+                key="crear_al_s_" + str(g["id"]) if g else "crear_al_s_none"
+            ) if secs else None
         c3, c4 = st.columns(2)
         with c3: apo = st.text_input("Apoderado (opcional)")
         with c4: tel = st.text_input("Telefono (opcional)")
@@ -2098,7 +2102,11 @@ def _frag_crear_alumno():
             elif not verificar_password_critica(pwd):
                 st.error("Contrasena incorrecta.")
             else:
-                ok, msg = crear_alumno(dni.strip(), nom.strip(), pat.strip(), mat.strip(), s["id"], apo.strip(), tel.strip(), st.session_state["user"])
+                ok, msg = crear_alumno(
+                    dni.strip(), nom.strip(), pat.strip(), mat.strip(),
+                    s["id"], apo.strip(), tel.strip(),
+                    st.session_state["user"]
+                )
                 if ok: st.toast(msg); st.rerun()
                 else: st.error(msg)
 
