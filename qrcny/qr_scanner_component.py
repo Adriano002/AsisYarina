@@ -1,10 +1,10 @@
 # qr_scanner_component.py
 # Componente propio de escaneo QR para Streamlit.
-# v11: liberacion agresiva de camara + reintentos automaticos + pitidos diferenciados.
+# v12: camara trasera forzada, inicio automatico, reintentos, pitidos diferenciados.
 import streamlit as st
 
 QR_SCANNER_COMPONENT = st.components.v2.component(
-    name="mi_qr_scanner_v11",
+    name="mi_qr_scanner_v12",
     isolate_styles=False,
     html="""
     <div id="qr-wrapper">
@@ -21,6 +21,14 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         border: 2px solid #E65100; background: #000; min-height: 260px;
     }
     #qr-reader video { border-radius: 6px; width: 100% !important; height: auto !important; }
+    /* Ocultar botones y selects que agrega html5-qrcode por defecto */
+    #qr-reader__dashboard_section_csr button,
+    #qr-reader__dashboard_section_swaplink,
+    #qr-reader__header_message,
+    #qr-reader__status_span,
+    #qr-reader select {
+        display: none !important;
+    }
     #qr-status {
         text-align: center; font-size: 13px; margin-top: 8px; color: #666;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -35,17 +43,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         font-weight: 700; padding: 14px; border-radius: 8px;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         transition: all 0.2s ease;
-    }
-    #qr-reader button {
-        background: #E65100 !important; color: white !important;
-        border: none !important; border-radius: 6px !important;
-        padding: 8px 16px !important; font-weight: 600 !important;
-        cursor: pointer !important; margin: 4px !important;
-    }
-    #qr-reader button:hover { background: #BF360C !important; }
-    #qr-reader select {
-        border-radius: 6px !important; padding: 6px 10px !important;
-        margin: 4px !important; border: 1px solid #ccc !important;
     }
     #qr-reader a { color: #E65100 !important; font-weight: 600 !important; }
     """,
@@ -162,12 +159,10 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         // LIBERACION AGRESIVA DE CAMARA
         // ============================================================
         function liberarCamara() {
-            // 1) limpiar scanner html5-qrcode
             if (scanner) {
                 try { scanner.clear(); } catch (e) {}
                 scanner = null;
             }
-            // 2) apagar TODOS los tracks de video que sigan vivos
             try {
                 document.querySelectorAll('video').forEach(v => {
                     const s = v.srcObject;
@@ -181,7 +176,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                     try { v.remove(); } catch(e) {}
                 });
             } catch (e) {}
-            // 3) limpiar contenedor
             const reader = document.getElementById('qr-reader');
             if (reader) {
                 try { reader.innerHTML = ''; } catch(e) {}
@@ -195,7 +189,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         }
 
         // ============================================================
-        // SCANNER CON REINTENTOS AUTOMATICOS
+        // SCANNER
         // ============================================================
         function iniciarScanner() {
             if (iniciado || destroyed) return;
@@ -216,7 +210,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             intentoActual = 0;
             getAudioCtx();
 
-            // Primer intento despues de 2500ms (dar tiempo a Android)
             setTimeout(() => {
                 if (destroyed || !iniciado) return;
                 _intentarEncender();
@@ -245,7 +238,8 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                         fps: 10,
                         qrbox: { width: 250, height: 250 },
                         aspectRatio: 1.0,
-                        rememberLastUsedCamera: true,
+                        rememberLastUsedCamera: false,
+                        videoConstraints: { facingMode: { exact: "environment" } },
                         supportedScanTypes: [Html5QrcodeScanType.SCAN_TYPE_CAMERA]
                     },
                     false
@@ -299,10 +293,8 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             const msg = (e && e.message) ? e.message : String(e);
             console.warn('[QR] fallo en ' + contexto + ':', msg);
 
-            // Si es NotReadableError, reintentar hasta MAX_INTENTOS
             if (msg.includes('NotReadableError') || msg.includes('Could not start video source')) {
                 if (intentoActual < MAX_INTENTOS) {
-                    // Espera creciente: 1500, 2000, 2500 ms
                     const espera = 1500 + (intentoActual * 500);
                     setStatus('Camara ocupada. Reintentando en ' + (espera/1000) + 's... (' + intentoActual + '/' + MAX_INTENTOS + ')');
                     setTimeout(() => {
@@ -330,7 +322,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         }
 
         // ============================================================
-        // API PUBLICA: Python llama esto para disparar pitido + mensaje
+        // API PUBLICA
         // ============================================================
         window.__qrFeedback = function(kind, texto) {
             if (kind === 'nuevo') {
@@ -362,34 +354,34 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         // ============================================================
         // CARGA DE LIBRERIA
         // ============================================================
-        if (window.__qrV11Listo && typeof Html5QrcodeScanner !== 'undefined') {
+        if (window.__qrV12Listo && typeof Html5QrcodeScanner !== 'undefined') {
             iniciarScanner();
             return;
         }
-        if (window.__qrV11Cargando) {
+        if (window.__qrV12Cargando) {
             let n = 0;
             const t = setInterval(() => {
                 n++;
                 if (typeof Html5QrcodeScanner !== 'undefined') {
                     clearInterval(t);
-                    window.__qrV11Listo = true;
-                    window.__qrV11Cargando = false;
+                    window.__qrV12Listo = true;
+                    window.__qrV12Cargando = false;
                     iniciarScanner();
                 } else if (n > 100) {
                     clearInterval(t);
-                    window.__qrV11Cargando = false;
+                    window.__qrV12Cargando = false;
                     setError('Timeout cargando libreria.');
                 }
             }, 100);
             return;
         }
-        window.__qrV11Cargando = true;
+        window.__qrV12Cargando = true;
         const s = document.createElement('script');
         s.src = 'https://unpkg.com/html5-qrcode';
         s.async = true;
         s.onload = () => {
-            window.__qrV11Listo = true;
-            window.__qrV11Cargando = false;
+            window.__qrV12Listo = true;
+            window.__qrV12Cargando = false;
             setTimeout(() => {
                 if (typeof Html5QrcodeScanner === 'undefined') {
                     setError('Libreria cargada pero sin Html5QrcodeScanner.');
@@ -399,7 +391,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             }, 50);
         };
         s.onerror = () => {
-            window.__qrV11Cargando = false;
+            window.__qrV12Cargando = false;
             setError('Error al cargar html5-qrcode del CDN.');
         };
         document.head.appendChild(s);
