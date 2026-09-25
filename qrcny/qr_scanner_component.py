@@ -119,7 +119,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                 osc1.type = 'sine';
                 osc1.frequency.setValueAtTime(523, ctx.currentTime);
 
-                // Envolvente suave: fade-in 15ms, fade-out 100ms
                 gain1.gain.setValueAtTime(0, ctx.currentTime);
                 gain1.gain.linearRampToValueAtTime(0.35, ctx.currentTime + 0.015);
                 gain1.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
@@ -195,66 +194,75 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             // Desbloquear audio con la primera interaccion
             getAudioCtx();
 
-            scanner = new Html5QrcodeScanner(
-                "qr-reader",
-                {
-                    fps: 10,
-                    qrbox: { width: 250, height: 250 },
-                    aspectRatio: 1.0,
-                    rememberLastUsedCamera: true,
-                    supportedScanTypes: [Html5QrcodeScanType.SCAN_TYPE_CAMERA]
-                },
-                false
-            );
+            // CAMBIO 1: espera de 500ms para evitar AbortError en Firefox
+            setTimeout(() => {
+                if (!iniciado) return;
 
-            const onScanSuccess = (texto) => {
+                scanner = new Html5QrcodeScanner(
+                    "qr-reader",
+                    {
+                        fps: 10,
+                        qrbox: { width: 250, height: 250 },
+                        aspectRatio: 1.0,
+                        rememberLastUsedCamera: true,
+                        // CAMBIO 2: sin "exact" para que Firefox no aborte
+                        videoConstraints: { facingMode: "environment" },
+                        supportedScanTypes: [Html5QrcodeScanType.SCAN_TYPE_CAMERA]
+                    },
+                    false
+                );
+
+                const onScanSuccess = (texto) => {
+                    try {
+                        const m = texto.match(/\\b(\\d{8})\\b/);
+                        if (!m) return;
+                        const dni = m[1];
+                        const t = Date.now() / 1000;
+                        if (dni === ultimoDni && (t - ultimoTs) < 3) return;
+                        ultimoDni = dni;
+                        ultimoTs = t;
+                        setStatus('QR: ' + dni);
+                        pitidoSimple();
+                        setTriggerValue("qr_dni", dni);
+                    } catch (e) {
+                        console.error('[QR] error en onScanSuccess:', e);
+                    }
+                };
+
+                const onScanError = () => {};
+
+                let resultado;
                 try {
-                    const m = texto.match(/\\b(\\d{8})\\b/);
-                    if (!m) return;
-                    const dni = m[1];
-                    const t = Date.now() / 1000;
-                    if (dni === ultimoDni && (t - ultimoTs) < 3) return;
-                    ultimoDni = dni;
-                    ultimoTs = t;
-                    setStatus('QR: ' + dni);
-                    pitidoSimple();               // ← PITIDO
-                    setTriggerValue("qr_dni", dni);
+                    resultado = scanner.render(onScanSuccess, onScanError);
                 } catch (e) {
-                    console.error('[QR] error en onScanSuccess:', e);
+                    const msg = (e && e.message) ? e.message : String(e);
+                    setError('Error al iniciar: ' + msg);
+                    iniciado = false;
+                    return;
                 }
-            };
 
-            const onScanError = () => {};
-
-            let resultado;
-            try {
-                resultado = scanner.render(onScanSuccess, onScanError);
-            } catch (e) {
-                const msg = (e && e.message) ? e.message : String(e);
-                setError('Error al iniciar: ' + msg);
-                iniciado = false;
-                return;
-            }
-
-            if (resultado && typeof resultado.then === 'function') {
-                resultado
-                    .then(() => setStatus('Camara activa.'))
-                    .catch((e) => {
-                        const msg = (e && e.message) ? e.message : String(e);
-                        if (msg.includes('NotAllowedError')) {
-                            setError('Permiso de camara denegado. Acepta el permiso o usa HTTPS.');
-                        } else if (msg.includes('NotFoundError')) {
-                            setError('No se encontro ninguna camara en este dispositivo.');
-                        } else if (msg.includes('NotReadableError')) {
-                            setError('La camara esta siendo usada por otra aplicacion.');
-                        } else {
-                            setError('Error camara: ' + msg);
-                        }
-                        iniciado = false;
-                    });
-            } else {
-                setStatus('Camara activa.');
-            }
+                if (resultado && typeof resultado.then === 'function') {
+                    resultado
+                        .then(() => setStatus('Camara activa.'))
+                        .catch((e) => {
+                            const msg = (e && e.message) ? e.message : String(e);
+                            if (msg.includes('NotAllowedError')) {
+                                setError('Permiso de camara denegado. Acepta el permiso o usa HTTPS.');
+                            } else if (msg.includes('NotFoundError')) {
+                                setError('No se encontro ninguna camara en este dispositivo.');
+                            } else if (msg.includes('NotReadableError')) {
+                                setError('La camara esta siendo usada por otra aplicacion.');
+                            } else if (msg.includes('AbortError')) {
+                                setError('Firefox aborto el inicio de la camara. Recarga la pagina e intenta de nuevo.');
+                            } else {
+                                setError('Error camara: ' + msg);
+                            }
+                            iniciado = false;
+                        });
+                } else {
+                    setStatus('Camara activa.');
+                }
+            }, 500);
         }
 
         // ============================================================
