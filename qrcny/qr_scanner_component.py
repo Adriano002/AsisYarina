@@ -1,10 +1,10 @@
 # qr_scanner_component.py
 # Componente propio de escaneo QR para Streamlit.
-# v12: camara trasera forzada, inicio automatico, reintentos, pitidos diferenciados.
+# v13: camara trasera + fix pantalla negra + reintentos + pitidos diferenciados.
 import streamlit as st
 
 QR_SCANNER_COMPONENT = st.components.v2.component(
-    name="mi_qr_scanner_v12",
+    name="mi_qr_scanner_v13",
     isolate_styles=False,
     html="""
     <div id="qr-wrapper">
@@ -19,8 +19,16 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
     #qr-reader {
         border-radius: 8px; overflow: hidden;
         border: 2px solid #E65100; background: #000; min-height: 260px;
+        position: relative;
     }
-    #qr-reader video { border-radius: 6px; width: 100% !important; height: auto !important; }
+    /* Forzar que el video se vea siempre */
+    #qr-reader video {
+        border-radius: 6px;
+        width: 100% !important;
+        height: auto !important;
+        display: block !important;
+        object-fit: cover;
+    }
     /* Ocultar botones y selects que agrega html5-qrcode por defecto */
     #qr-reader__dashboard_section_csr button,
     #qr-reader__dashboard_section_swaplink,
@@ -58,6 +66,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         let destroyed = false;
         let intentoActual = 0;
         const MAX_INTENTOS = 4;
+        let intervaloVideo = null;
 
         // ============================================================
         // AUDIO: pitidos diferenciados (Web Audio API)
@@ -156,9 +165,52 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         }
 
         // ============================================================
+        // FIX PANTALLA NEGRA: forzar video visible
+        // ============================================================
+        function forzarVideoVisible() {
+            const video = document.querySelector('#qr-reader video');
+            if (!video) return false;
+            try {
+                video.style.display = 'block';
+                video.style.width = '100%';
+                video.style.height = 'auto';
+                video.style.objectFit = 'cover';
+                video.style.position = 'relative';
+                video.style.zIndex = '9999';
+                video.setAttribute('playsinline', 'true');
+                video.setAttribute('webkit-playsinline', 'true');
+                video.setAttribute('autoplay', 'true');
+                video.setAttribute('muted', 'true');
+                // Algunos navegadores necesitan play() explícito
+                if (video.paused) {
+                    const p = video.play();
+                    if (p && typeof p.catch === 'function') p.catch(() => {});
+                }
+                return true;
+            } catch (e) {
+                console.warn('[QR] forzarVideoVisible:', e);
+                return false;
+            }
+        }
+
+        function iniciarForzarVideo() {
+            if (intervaloVideo) { clearInterval(intervaloVideo); intervaloVideo = null; }
+            let intentos = 0;
+            intervaloVideo = setInterval(() => {
+                intentos++;
+                const ok = forzarVideoVisible();
+                if (ok || intentos > 15 || destroyed) {
+                    clearInterval(intervaloVideo);
+                    intervaloVideo = null;
+                }
+            }, 400);
+        }
+
+        // ============================================================
         // LIBERACION AGRESIVA DE CAMARA
         // ============================================================
         function liberarCamara() {
+            if (intervaloVideo) { clearInterval(intervaloVideo); intervaloVideo = null; }
             if (scanner) {
                 try { scanner.clear(); } catch (e) {}
                 scanner = null;
@@ -279,6 +331,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                     .then(() => {
                         setStatus('Camara activa.');
                         intentoActual = 0;
+                        iniciarForzarVideo();
                     })
                     .catch((e) => {
                         _manejarFallo(e, 'start');
@@ -286,6 +339,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             } else {
                 setStatus('Camara activa.');
                 intentoActual = 0;
+                iniciarForzarVideo();
             }
         }
 
@@ -354,34 +408,34 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         // ============================================================
         // CARGA DE LIBRERIA
         // ============================================================
-        if (window.__qrV12Listo && typeof Html5QrcodeScanner !== 'undefined') {
+        if (window.__qrV13Listo && typeof Html5QrcodeScanner !== 'undefined') {
             iniciarScanner();
             return;
         }
-        if (window.__qrV12Cargando) {
+        if (window.__qrV13Cargando) {
             let n = 0;
             const t = setInterval(() => {
                 n++;
                 if (typeof Html5QrcodeScanner !== 'undefined') {
                     clearInterval(t);
-                    window.__qrV12Listo = true;
-                    window.__qrV12Cargando = false;
+                    window.__qrV13Listo = true;
+                    window.__qrV13Cargando = false;
                     iniciarScanner();
                 } else if (n > 100) {
                     clearInterval(t);
-                    window.__qrV12Cargando = false;
+                    window.__qrV13Cargando = false;
                     setError('Timeout cargando libreria.');
                 }
             }, 100);
             return;
         }
-        window.__qrV12Cargando = true;
+        window.__qrV13Cargando = true;
         const s = document.createElement('script');
         s.src = 'https://unpkg.com/html5-qrcode';
         s.async = true;
         s.onload = () => {
-            window.__qrV12Listo = true;
-            window.__qrV12Cargando = false;
+            window.__qrV13Listo = true;
+            window.__qrV13Cargando = false;
             setTimeout(() => {
                 if (typeof Html5QrcodeScanner === 'undefined') {
                     setError('Libreria cargada pero sin Html5QrcodeScanner.');
@@ -391,7 +445,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             }, 50);
         };
         s.onerror = () => {
-            window.__qrV12Cargando = false;
+            window.__qrV13Cargando = false;
             setError('Error al cargar html5-qrcode del CDN.');
         };
         document.head.appendChild(s);
