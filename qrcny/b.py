@@ -850,20 +850,52 @@ def quitar_justificacion(ida, usuario):
 def _procesar_escaneo(dni):
     u = st.session_state.get("user")
     if not u: return
-    _, tipo, msg, extra = registrar_entrada(dni, u, origen="qr")
+    ok, tipo, msg, extra = registrar_entrada(dni, u, origen="qr")
+
+    # Clasificar feedback para el componente JS
+    if not ok and tipo == "ERROR":
+        if "ya registro" in msg or "ya tiene" in msg:
+            feedback = "duplicado"
+        else:
+            feedback = "error"
+    elif tipo == "BLOQUEADO":
+        feedback = "bloqueado"
+    elif ok:
+        feedback = "nuevo"
+    else:
+        feedback = "error"
+
     st.session_state.setdefault("_qr_mensajes", [])
-    st.session_state["_qr_mensajes"].insert(0, {"dni": dni, "tipo": tipo, "mensaje": msg, "extra": extra, "ts": time.time()})
+    st.session_state["_qr_mensajes"].insert(0, {
+        "dni": dni, "tipo": tipo, "mensaje": msg,
+        "extra": extra, "ts": time.time(), "feedback": feedback
+    })
     st.session_state["_qr_mensajes"] = st.session_state["_qr_mensajes"][:10]
+
+    # Guardar feedback pendiente para disparar JS en el proximo render
+    st.session_state["_qr_feedback_pendiente"] = {
+        "kind": feedback,
+        "texto": msg[:60],
+        "ts": time.time(),
+    }
 
 def _render_mensaje_qr(msg):
     tipo = msg["tipo"]; mensaje = msg["mensaje"]
-    clase = {"PUNTUAL":"qr-puntual","TARDANZA":"qr-tardanza","REFORZAMIENTO":"qr-refuerzo","BLOQUEADO":"qr-bloqueado","ERROR":"qr-error"}.get(tipo, "qr-error")
+    clase = {"PUNTUAL":"qr-puntual","TARDANZA":"qr-tardanza","REFORZAMIENTO":"qr-refuerzo",
+             "BLOQUEADO":"qr-bloqueado","ERROR":"qr-error"}.get(tipo, "qr-error")
+
     if tipo == "TARDANZA":
         acc = (msg.get("extra") or {}).get("accion")
-        if acc == ACC_DERIVADO: mensaje += " -> Derivar a TOECE"; clase = "qr-derivado"
-        elif acc == ACC_RETENIDO: mensaje += " -> Retener hasta apoderado"; clase = "qr-retenido"
-    st.markdown('<div class="qr-msg ' + clase + '"><div class="qr-texto">' + mensaje + '</div></div>', unsafe_allow_html=True)
+        if acc == ACC_DERIVADO:
+            mensaje += " -> Derivar a TOECE"; clase = "qr-derivado"
+        elif acc == ACC_RETENIDO:
+            mensaje += " -> Retener hasta apoderado"; clase = "qr-retenido"
 
+    st.markdown(
+        '<div class="qr-msg ' + clase + '"><div class="qr-texto">' +
+        mensaje + '</div></div>',
+        unsafe_allow_html=True
+    )
 def escaner_qr_continuo(key="qr_scanner"):
     st.markdown(
         '<div class="scan-header"><div class="scan-titulo">Escaneo QR</div>'
@@ -871,14 +903,13 @@ def escaner_qr_continuo(key="qr_scanner"):
         unsafe_allow_html=True
     )
 
-    # Callback (obligatorio para Components v2)
     def _on_scan():
         pass
 
-    # Montar el componente propio
-    result = qr_scanner(key="qr_" + key, on_scan=_on_scan)
+    # Key unica por montaje para forzar iframe nuevo al volver a la vista
+    mount_id = st.session_state.get("_qr_mount_id", 0)
+    result = qr_scanner(key="qr_" + key + "_" + str(mount_id), on_scan=_on_scan)
 
-    # Procesar el DNI escaneado
     if result is not None and getattr(result, "qr_dni", None):
         dni = result.qr_dni
         ult = st.session_state.get("_ultimo_qr_scan", {})
@@ -886,7 +917,36 @@ def escaner_qr_continuo(key="qr_scanner"):
             st.session_state["_ultimo_qr_scan"] = {"dni": dni, "ts": time.time()}
             _procesar_escaneo(dni)
 
-    # Mostrar historial de escaneos recientes
+    # Puente Python -> JS: pitido diferenciado + cartel visual
+    fb = st.session_state.get("_qr_feedback_pendiente")
+    if fb and (time.time() - fb.get("ts", 0)) < 5:
+        texto_js = fb["texto"].replace("\\", "\\\\").replace("'", "\\'").replace("\n", " ")[:60]
+        st.components.v1.html(f"""
+            <script>
+            (function() {{
+                let tries = 0;
+                const buscar = () => {{
+                    tries++;
+                    try {{
+                        const frames = document.querySelectorAll('iframe');
+                        for (const f of frames) {{
+                            try {{
+                                const w = f.contentWindow;
+                                if (w && w.__qrFeedback) {{
+                                    w.__qrFeedback('{fb["kind"]}', '{texto_js}');
+                                    return;
+                                }}
+                            }} catch(e) {{}}
+                        }}
+                    }} catch(e) {{}}
+                    if (tries < 40) setTimeout(buscar, 100);
+                }};
+                buscar();
+            }})();
+            </script>
+        """, height=0)
+        st.session_state.pop("_qr_feedback_pendiente", None)
+
     if st.session_state.get("_qr_mensajes"):
         st.markdown('<div class="scan-ultimos">Ultimos escaneos</div>', unsafe_allow_html=True)
         for msg in st.session_state["_qr_mensajes"][:5]:
