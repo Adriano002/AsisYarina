@@ -1,10 +1,10 @@
 # qr_scanner_component.py
-# Componente propio de escaneo QR para Streamlit.
-# Pitido bueno al detectar un DNI nuevo, pitido feo si vuelve a escanear el mismo DNI.
+# Componente de escaneo QR para Streamlit.
+# Pitido bueno al escanear un DNI nuevo, pitido feo si ese DNI YA fue escaneado antes.
 import streamlit as st
 
 QR_SCANNER_COMPONENT = st.components.v2.component(
-    name="mi_qr_scanner_v10",
+    name="mi_qr_scanner_v11",
     isolate_styles=False,
     html="""
     <div id="qr-wrapper">
@@ -77,7 +77,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
     js="""
     export default function(component) {
         const { setTriggerValue } = component;
-        let ultimoDni = null;
+        const dnisVistos = new Set();   // <- memoria de TODOS los DNI escaneados
         let scanner = null;
         let iniciado = false;
         let ultimoPitidoTs = 0;
@@ -107,7 +107,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             if (!ctx) return;
 
             const ahora = Date.now();
-            if (ahora - ultimoPitidoTs < 800) return; // anti-spam
+            if (ahora - ultimoPitidoTs < 800) return;
             ultimoPitidoTs = ahora;
 
             try {
@@ -150,7 +150,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             if (!ctx) return;
 
             const ahora = Date.now();
-            if (ahora - ultimoPitidoMaloTs < 600) return; // anti-spam propio
+            if (ahora - ultimoPitidoMaloTs < 600) return;
             ultimoPitidoMaloTs = ahora;
 
             try {
@@ -259,15 +259,15 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                         if (!m) return;
                         const dni = m[1];
 
-                        // --- MISMO DNI QUE EL ULTIMO ESCANEADO: pitido feo ---
-                        if (dni === ultimoDni) {
+                        // --- DNI YA VISTO ANTES: pitido feo ---
+                        if (dnisVistos.has(dni)) {
                             setStatus('QR repetido: ' + dni);
                             pitidoMalo();
                             return;
                         }
 
-                        // --- DNI DISTINTO: pitido bueno ---
-                        ultimoDni = dni;
+                        // --- DNI NUEVO: pitido bueno ---
+                        dnisVistos.add(dni);
                         setStatus('QR: ' + dni);
                         pitidoSimple();
                         setTriggerValue("qr_dni", dni);
@@ -317,34 +317,34 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         // ============================================================
         window.addEventListener('beforeunload', destruirScanner);
 
-        if (window.__qrV10Listo && typeof Html5QrcodeScanner !== 'undefined') {
+        if (window.__qrV11Listo && typeof Html5QrcodeScanner !== 'undefined') {
             iniciarScanner();
             return;
         }
-        if (window.__qrV10Cargando) {
+        if (window.__qrV11Cargando) {
             let n = 0;
             const t = setInterval(() => {
                 n++;
                 if (typeof Html5QrcodeScanner !== 'undefined') {
                     clearInterval(t);
-                    window.__qrV10Listo = true;
-                    window.__qrV10Cargando = false;
+                    window.__qrV11Listo = true;
+                    window.__qrV11Cargando = false;
                     iniciarScanner();
                 } else if (n > 100) {
                     clearInterval(t);
-                    window.__qrV10Cargando = false;
+                    window.__qrV11Cargando = false;
                     setError('Timeout cargando libreria.');
                 }
             }, 100);
             return;
         }
-        window.__qrV10Cargando = true;
+        window.__qrV11Cargando = true;
         const s = document.createElement('script');
         s.src = 'https://unpkg.com/html5-qrcode';
         s.async = true;
         s.onload = () => {
-            window.__qrV10Listo = true;
-            window.__qrV10Cargando = false;
+            window.__qrV11Listo = true;
+            window.__qrV11Cargando = false;
             setTimeout(() => {
                 if (typeof Html5QrcodeScanner === 'undefined') {
                     setError('Libreria cargada pero sin Html5QrcodeScanner.');
@@ -354,7 +354,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             }, 50);
         };
         s.onerror = () => {
-            window.__qrV10Cargando = false;
+            window.__qrV11Cargando = false;
             setError('Error al cargar html5-qrcode del CDN.');
         };
         document.head.appendChild(s);
@@ -366,8 +366,8 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
 def qr_scanner(key="qr_scanner", on_scan=None):
     """
     Monta el componente escaner QR.
-    - DNI distinto al ultimo: pitido bueno y dispara trigger.
-    - Mismo DNI que el ultimo: pitido feo, sin trigger.
+    - DNI nuevo (nunca escaneado en esta sesion): pitido bueno + trigger.
+    - DNI ya escaneado antes en esta sesion: pitido feo, sin trigger.
     Devuelve el resultado con atributo .qr_dni
     """
     if on_scan is None:
