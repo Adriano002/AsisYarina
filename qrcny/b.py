@@ -911,7 +911,6 @@ def escaner_qr_continuo(key="qr_scanner"):
 
     mount_id = st.session_state.get("_qr_mount_id", 0)
 
-    # Tomar feedback pendiente (si hay) para pasarlo al componente
     fb = st.session_state.get("_qr_feedback_pendiente")
     feedback_kind = fb["kind"] if fb else ""
     feedback_texto = (fb["texto"] or "")[:60] if fb else ""
@@ -932,7 +931,6 @@ def escaner_qr_continuo(key="qr_scanner"):
             st.session_state["_ultimo_qr_scan"] = {"dni": dni, "ts": time.time()}
             _procesar_escaneo(dni)
 
-    # Consumir el feedback ya enviado al componente
     if fb:
         st.session_state.pop("_qr_feedback_pendiente", None)
 
@@ -940,7 +938,6 @@ def escaner_qr_continuo(key="qr_scanner"):
         st.markdown('<div class="scan-ultimos">Ultimos escaneos</div>', unsafe_allow_html=True)
         for msg in st.session_state["_qr_mensajes"][:5]:
             _render_mensaje_qr(msg)
-
 # reportes base
 def metricas_dia(fecha, pid=None):
     con = obtener_conexion()
