@@ -852,7 +852,6 @@ def _procesar_escaneo(dni):
     if not u: return
     ok, tipo, msg, extra = registrar_entrada(dni, u, origen="qr")
 
-    # Clasificar feedback para el componente JS
     if not ok and tipo == "ERROR":
         if "ya registro" in msg or "ya tiene" in msg:
             feedback = "duplicado"
@@ -863,7 +862,7 @@ def _procesar_escaneo(dni):
     elif ok:
         if tipo == "TARDANZA":
             feedback = "tardanza"
-        else:  # PUNTUAL o REFORZAMIENTO
+        else:
             feedback = "nuevo"
     else:
         feedback = "error"
@@ -875,13 +874,11 @@ def _procesar_escaneo(dni):
     })
     st.session_state["_qr_mensajes"] = st.session_state["_qr_mensajes"][:10]
 
-    # Guardar feedback pendiente para disparar JS en el proximo render
     st.session_state["_qr_feedback_pendiente"] = {
         "kind": feedback,
         "texto": msg[:60],
         "ts": time.time(),
     }
-
 def _render_mensaje_qr(msg):
     tipo = msg["tipo"]; mensaje = msg["mensaje"]
     clase = {"PUNTUAL":"qr-puntual","TARDANZA":"qr-tardanza","REFORZAMIENTO":"qr-refuerzo",
