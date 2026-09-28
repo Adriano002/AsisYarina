@@ -1286,7 +1286,7 @@ def generar_pdf_tabla(df, titulo, subtitulo=None):
         el.append(t)
     doc.build(el); buf.seek(0); return buf.getvalue()
 
-def generar_pdf_tabla_ancha(df, titulo, subtitulo=None):
+def generar_pdf_tabla_ancha(df, titulo, subtitulo=None, fuente_chica=False):
     buf = BytesIO()
     doc = SimpleDocTemplate(
         buf,
@@ -1321,22 +1321,32 @@ def generar_pdf_tabla_ancha(df, titulo, subtitulo=None):
         GRIS_LINEA = colors.HexColor("#CCCCCC")
         GRIS_FILA_ALT = colors.HexColor("#FAFAFA")
 
+        # Fuente segun el reporte
+        if fuente_chica:
+            fuente_cab = 6
+            fuente_fila = 6
+            padding = 3
+        else:
+            fuente_cab = 11
+            fuente_fila = 10
+            padding = 5
+
         t = Table(datos, colWidths=anchos, repeatRows=1)
         t.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), colors.white),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, 0), 12),
-            ("FONTSIZE", (0, 1), (-1, -1), 11),
+            ("FONTSIZE", (0, 0), (-1, 0), fuente_cab),
+            ("FONTSIZE", (0, 1), (-1, -1), fuente_fila),
             ("TEXTCOLOR", (0, 1), (-1, -1), colors.black),
             ("LINEBELOW", (0, 0), (-1, 0), 1.5, colors.black),
             ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#CCCCCC")),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 6),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-            ("TOPPADDING", (0, 0), (-1, -1), 5),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("LEFTPADDING", (0, 0), (-1, -1), padding),
+            ("RIGHTPADDING", (0, 0), (-1, -1), padding),
+            ("TOPPADDING", (0, 0), (-1, -1), padding),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), padding),
             ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, GRIS_FILA_ALT]),
         ]))
         el.append(t)
@@ -2210,7 +2220,7 @@ def _rep_mostrar_reporte(idsec, tipo, desde, hasta):
             with c1:
                 st.download_button("Excel", df_a_xlsx(df), "Mensual_" + sec['grado'] + sec['seccion'] + ".xlsx", key="rep_dl_men_x")
             with c2:
-                st.download_button("PDF", generar_pdf_tabla_ancha(df, "Cierre mensual - " + sec['grado'] + " " + sec['seccion'] + " - Turno " + sec['turno']), "Mensual_" + sec['grado'] + sec['seccion'] + ".pdf", "application/pdf", key="rep_dl_men_p")
+                st.download_button("PDF", generar_pdf_tabla_ancha(df, "Cierre mensual - " + sec['grado'] + " " + sec['seccion'] + " - Turno " + sec['turno'], fuente_chica=True), "Mensual_" + sec['grado'] + sec['seccion'] + ".pdf", "application/pdf", key="rep_dl_men_p")
 def _mostrar_reporte_agrupado(df, sec, titulo):
     if df.empty:
         st.info("Sin registros en este rango.")
