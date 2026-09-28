@@ -1,7 +1,8 @@
 # qr_scanner_component.py
 # Componente de escaneo QR para Streamlit.
-# Expone window.__qrFeedback(kind, texto) para que el app.py le indique
+# Expone window.__qrFeedback(kind, texto) para que app.py le indique
 # qué sonido/voz reproducir: 'nuevo' | 'tardanza' | 'duplicado' | 'bloqueado' | 'error'
+# Todos los avisos usan voz robótica (Web Speech API) + pitido sintetizado.
 import streamlit as st
 
 QR_SCANNER_COMPONENT = st.components.v2.component(
@@ -80,7 +81,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         const { setTriggerValue } = component;
         let scanner = null;
         let iniciado = false;
-        let ultimoPitidoTs = 0;
         let ultimaVozTs = 0;
 
         // ============================================================
@@ -109,7 +109,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             if (!window.speechSynthesis) return null;
             const voces = window.speechSynthesis.getVoices();
             if (!voces || voces.length === 0) return null;
-            // Prioridad: es-PE > es-MX > es-US > es-ES > cualquier es
             const orden = ["es-PE", "es-MX", "es-US", "es-419", "es-ES"];
             for (const lang of orden) {
                 const v = voces.find(x => x.lang === lang);
@@ -125,7 +124,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         function hablar(texto, opciones) {
             if (!window.speechSynthesis) return;
             const ahora = Date.now();
-            if (ahora - ultimaVozTs < 500) return;  // anti-solape
+            if (ahora - ultimaVozTs < 400) return;
             ultimaVozTs = ahora;
 
             try {
@@ -183,11 +182,10 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         }
 
         // ============================================================
-        // API PUBLICA: la llama el app.py via __qrFeedback(kind, texto)
+        // API PUBLICA: la llama app.py via window.__qrFeedback(kind, texto)
         // ============================================================
         window.__qrFeedback = function(kind, texto) {
             try {
-                // Desbloquear audio por si aun no hubo interaccion previa
                 getAudioCtx();
 
                 switch (kind) {
@@ -204,18 +202,18 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                     case "duplicado":
                         setStatus("QR duplicado: " + (texto || ""));
                         pitidoDuplicado();
-                        hablar("Duplicado", { pitch: 0.4, rate: 0.95 });
+                        hablar("Duplicado", { pitch: 0.40, rate: 0.95 });
                         break;
                     case "bloqueado":
                         setStatus("ALUMNO BLOQUEADO: " + (texto || ""));
                         pitidoBloqueado();
-                        hablar("Alumno bloqueado", { pitch: 0.35, rate: 0.9, volume: 1.0 });
+                        hablar("Alumno bloqueado", { pitch: 0.35, rate: 0.90, volume: 1.0 });
                         break;
                     case "error":
                     default:
                         setStatus("Error: " + (texto || ""));
                         pitidoError();
-                        hablar("Error", { pitch: 0.5, rate: 1.0 });
+                        hablar("Error", { pitch: 0.50, rate: 1.00 });
                         break;
                 }
             } catch (e) {
@@ -270,7 +268,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
 
             getAudioCtx();
             if (window.speechSynthesis) {
-                // "Despertar" la sintesis de voz (algunos navegadores la duermen)
                 try {
                     const u = new SpeechSynthesisUtterance("");
                     window.speechSynthesis.speak(u);
@@ -298,7 +295,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                         const m = texto.match(/\\b(\\d{8})\\b/);
                         if (!m) return;
                         const dni = m[1];
-                        // Solo avisamos a Python. El decide el feedback.
                         setTriggerValue("qr_dni", dni);
                     } catch (e) {
                         console.error('[QR] error en onScanSuccess:', e);
