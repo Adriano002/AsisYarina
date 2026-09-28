@@ -1046,14 +1046,14 @@ def reporte_conteo_faltas(inicio, fin, ids_sec, pid=None):
     q += " GROUP BY a.id ORDER BY faltas_injust DESC, total_faltas DESC"
     return pd.read_sql(q, con, params=p)
 
-def cierre_mensual_calendario(mes, anio, ids_sec, pid=None):
-    ult = monthrange(anio, mes)[1]
-    ini = date(anio, mes, 1)
-    fin = date(anio, mes, ult)
+def cierre_mensual_calendario(mes, año, ids_sec, pid=None):
+    ult = monthrange(año, mes)[1]
+    ini = date(año, mes, 1)
+    fin = date(año, mes, ult)
     con = obtener_conexion()
     dias = []
     for d in range(1, ult + 1):
-        f = date(anio, mes, d)
+        f = date(año, mes, d)
         if f.weekday() >= 5:
             esp = con.execute("SELECT id FROM dias_especiales WHERE fecha=? AND activo=1 AND tipo='evento'", (f.strftime("%Y-%m-%d"),)).fetchone()
             if not esp:
@@ -1228,7 +1228,7 @@ def reporte_detallado_por_mes(pid):
         cur = date(cur.year+1, 1, 1) if cur.month == 12 else date(cur.year, cur.month+1, 1)
     return res
 
-def cerrar_anio_escolar(usuario, pid, nuevo_nombre, fi, ff):
+def cerrar_año_escolar(usuario, pid, nuevo_nombre, fi, ff):
     con = obtener_conexion()
     p = con.execute("SELECT * FROM periodos WHERE id=?", (pid,)).fetchone()
     if not p: return False, "Periodo no encontrado."
@@ -1249,7 +1249,7 @@ def cerrar_anio_escolar(usuario, pid, nuevo_nombre, fi, ff):
             con.commit()
         listar_periodos.clear()
     except sqlite3.Error as e:
-        con.rollback(); log.error("cerrar anio: %s", e); return False, "Error al cerrar el anio."
+        con.rollback(); log.error("cerrar año: %s", e); return False, "Error al cerrar el año."
     auditar(usuario["usuario"], "Cerro periodo " + p["nombre"], tb="periodos", rid=pid)
     return True, "Periodo '" + p["nombre"] + "' cerrado. Nuevo: '" + nuevo_nombre + "'."
 
@@ -3021,7 +3021,7 @@ def _frag_importar_excel():
 def vista_auditoria():
     st.title("Auditoria y Periodos")
     usuario = st.session_state["user"]
-    tabs = st.tabs(["Registros", "Periodos", "Cierre de anio"])
+    tabs = st.tabs(["Registros", "Periodos", "Cierre de año"])
     with tabs[0]:
         df = obtener_auditoria(500)
         st.write(str(len(df)) + " registros")
@@ -3073,7 +3073,7 @@ def vista_auditoria():
                 if ok: st.toast(msg); st.rerun()
                 else: st.error(msg)
     with tabs[2]:
-        st.subheader("Cierre de anio escolar")
+        st.subheader("Cierre de año escolar")
         st.warning("Al cerrar el periodo se desactivan TODOS los alumnos.")
         p = obtener_periodo_activo()
         if not p:
@@ -3097,21 +3097,21 @@ def vista_auditoria():
         st.markdown("Paso 2: Cerrar periodo (requiere contrasena)")
         desc = st.session_state.get("_reporte_descargado", False)
         if not desc: st.info("Debes descargar el reporte anual antes.")
-        with st.form("cerrar_anio"):
+        with st.form("cerrar_año"):
             c1, c2, c3 = st.columns(3)
             with c1: nn = st.text_input("Nombre nuevo periodo", value=str(ahora().year + 1))
             with c2: fi = st.date_input("Inicio nuevo", date(ahora().year + 1, 3, 1))
             with c3: ff = st.date_input("Fin nuevo", date(ahora().year + 1, 12, 31))
             pwd = st.text_input("Contrasena de Admin o TOECE", type="password")
             conf = st.text_input("Escribe CERRAR para confirmar")
-            sub = st.form_submit_button("Cerrar anio escolar", type="primary")
+            sub = st.form_submit_button("Cerrar año escolar", type="primary")
         if sub:
             if not desc: st.error("Primero debes descargar el reporte anual.")
             elif conf.strip() != "CERRAR": st.error("Debes escribir exactamente CERRAR.")
             elif not pwd: st.error("Ingresa la contrasena.")
             elif not verificar_password_critica(pwd): st.error("Contrasena incorrecta.")
             else:
-                ok, msg = cerrar_anio_escolar(usuario, p["id"], nn, fi.strftime("%Y-%m-%d"), ff.strftime("%Y-%m-%d"))
+                ok, msg = cerrar_año_escolar(usuario, p["id"], nn, fi.strftime("%Y-%m-%d"), ff.strftime("%Y-%m-%d"))
                 if ok:
                     st.session_state.pop("_reporte_descargado", None); st.success(msg); st.rerun()
                 else: st.error(msg)
