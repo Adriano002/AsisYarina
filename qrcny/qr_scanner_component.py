@@ -1,12 +1,7 @@
-# qr_scanner_component.py
-# Componente de escaneo QR para Streamlit.
-# Expone window.__qrFeedback(kind, texto) para que app.py le indique
-# qué sonido/voz reproducir: 'nuevo' | 'tardanza' | 'duplicado' | 'bloqueado' | 'error'
-# Todos los avisos usan voz robótica (Web Speech API) + pitido sintetizado.
-import streamlit as st
 
+import streamlit as st
 QR_SCANNER_COMPONENT = st.components.v2.component(
-    name="mi_qr_scanner_v12",
+    name="mi_qr_scanner_v13",
     isolate_styles=False,
     html="""
     <div id="qr-wrapper">
@@ -82,6 +77,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         let scanner = null;
         let iniciado = false;
         let ultimaVozTs = 0;
+        let ultimoFbKey = "";
 
         // ============================================================
         // MOTOR DE AUDIO (Web Audio API)
@@ -126,7 +122,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             const ahora = Date.now();
             if (ahora - ultimaVozTs < 400) return;
             ultimaVozTs = ahora;
-
             try {
                 window.speechSynthesis.cancel();
                 const u = new SpeechSynthesisUtterance(texto);
@@ -161,33 +156,47 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             osc.stop(t0 + dur + 0.02);
         }
 
-        function pitidoNuevo() {           // Do -> Mi, agradable
+        function pitidoNuevo() {
             _tono(523, 0.12, 'sine', 0.35, 0);
             _tono(659, 0.15, 'sine', 0.35, 0.09);
         }
-        function pitidoTardanza() {        // Una nota neutra
+        function pitidoTardanza() {
             _tono(440, 0.25, 'sine', 0.30, 0);
         }
-        function pitidoDuplicado() {       // Buzz grave descendente
+        function pitidoDuplicado() {
             _tono(233, 0.18, 'square', 0.26, 0);
             _tono(185, 0.22, 'square', 0.26, 0.20);
         }
-        function pitidoBloqueado() {       // Triple buzz grave, mas agresivo
+        function pitidoBloqueado() {
             _tono(180, 0.15, 'sawtooth', 0.30, 0);
             _tono(140, 0.15, 'sawtooth', 0.30, 0.18);
             _tono(100, 0.30, 'sawtooth', 0.30, 0.36);
         }
-        function pitidoError() {           // Beep corto seco
+        function pitidoError() {
             _tono(330, 0.10, 'square', 0.28, 0);
         }
 
         // ============================================================
-        // API PUBLICA: la llama app.py via window.__qrFeedback(kind, texto)
+        // UTILIDADES
         // ============================================================
-        window.__qrFeedback = function(kind, texto) {
+        function setStatus(t) {
+            const el = document.getElementById('qr-status');
+            if (el) { el.textContent = t; el.style.display = 'block'; }
+        }
+        function setError(t) {
+            const e = document.getElementById('qr-error');
+            const s = document.getElementById('qr-status');
+            if (e) { e.textContent = t; e.style.display = 'block'; }
+            if (s) s.style.display = 'none';
+            console.error('[QR]', t);
+        }
+
+        // ============================================================
+        // REPRODUCIR FEEDBACK SEGUN KIND
+        // ============================================================
+        function reproducirFeedback(kind, texto) {
             try {
                 getAudioCtx();
-
                 switch (kind) {
                     case "nuevo":
                         setStatus("QR: " + (texto || ""));
@@ -217,30 +226,47 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                         break;
                 }
             } catch (e) {
-                console.error('[QR] __qrFeedback error:', e);
+                console.error('[QR] reproducirFeedback error:', e);
             }
+        }
+
+        // ============================================================
+        // EXPONER AL PADRE (por si el puente tambien funciona)
+        // ============================================================
+        window.__qrFeedback = function(kind, texto) {
+            reproducirFeedback(kind, texto);
         };
 
         // ============================================================
-        // UTILIDADES
+        // REACCIONAR A ARGS ENVIADOS DESDE PYTHON
         // ============================================================
-        function setStatus(t) {
-            const el = document.getElementById('qr-status');
-            if (el) { el.textContent = t; el.style.display = 'block'; }
-        }
-        function setError(t) {
-            const e = document.getElementById('qr-error');
-            const s = document.getElementById('qr-status');
-            if (e) { e.textContent = t; e.style.display = 'block'; }
-            if (s) s.style.display = 'none';
-            console.error('[QR]', t);
-        }
-        function destruirScanner() {
-            if (scanner) {
-                try { scanner.clear(); } catch (e) {}
-                scanner = null;
+        function chequearFeedback() {
+            try {
+                const a = (component && component.args) ? component.args : {};
+                const kind = a.feedback_kind || "";
+                const texto = a.feedback_texto || "";
+                const ts = a.feedback_ts || 0;
+                if (!kind) return;
+                const key = kind + "|" + texto + "|" + ts;
+                if (key === ultimoFbKey) return;
+                ultimoFbKey = key;
+                reproducirFeedback(kind, texto);
+            } catch (e) {
+                console.warn('[QR] args check error:', e);
             }
-            iniciado = false;
+        }
+
+        // Ejecutar inmediatamente y tambien tras un pequeno delay
+        chequearFeedback();
+        setTimeout(chequearFeedback, 150);
+
+        // Si la version de Streamlit expone onArgsChange, usarlo
+        if (typeof component.onArgsChange === 'function') {
+            try {
+                component.onArgsChange(() => chequearFeedback());
+            } catch (e) {
+                console.warn('[QR] onArgsChange no disponible:', e);
+            }
         }
 
         // ============================================================
@@ -262,7 +288,10 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                 return;
             }
 
-            destruirScanner();
+            if (scanner) {
+                try { scanner.clear(); } catch (e) {}
+                scanner = null;
+            }
             reader.innerHTML = '';
             iniciado = true;
 
@@ -340,63 +369,71 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         // ============================================================
         // CARGA DE LIBRERIA
         // ============================================================
-        window.addEventListener('beforeunload', destruirScanner);
+        window.addEventListener('beforeunload', () => {
+            if (scanner) {
+                try { scanner.clear(); } catch (e) {}
+                scanner = null;
+            }
+            iniciado = false;
+        });
 
-        if (window.__qrV12Listo && typeof Html5QrcodeScanner !== 'undefined') {
+        if (window.__qrV13Listo && typeof Html5QrcodeScanner !== 'undefined') {
             iniciarScanner();
-            return;
-        }
-        if (window.__qrV12Cargando) {
+        } else if (window.__qrV13Cargando) {
             let n = 0;
             const t = setInterval(() => {
                 n++;
                 if (typeof Html5QrcodeScanner !== 'undefined') {
                     clearInterval(t);
-                    window.__qrV12Listo = true;
-                    window.__qrV12Cargando = false;
+                    window.__qrV13Listo = true;
+                    window.__qrV13Cargando = false;
                     iniciarScanner();
                 } else if (n > 100) {
                     clearInterval(t);
-                    window.__qrV12Cargando = false;
+                    window.__qrV13Cargando = false;
                     setError('Timeout cargando libreria.');
                 }
             }, 100);
-            return;
+        } else {
+            window.__qrV13Cargando = true;
+            const s = document.createElement('script');
+            s.src = 'https://unpkg.com/html5-qrcode';
+            s.async = true;
+            s.onload = () => {
+                window.__qrV13Listo = true;
+                window.__qrV13Cargando = false;
+                setTimeout(() => {
+                    if (typeof Html5QrcodeScanner === 'undefined') {
+                        setError('Libreria cargada pero sin Html5QrcodeScanner.');
+                        return;
+                    }
+                    iniciarScanner();
+                }, 50);
+            };
+            s.onerror = () => {
+                window.__qrV13Cargando = false;
+                setError('Error al cargar html5-qrcode del CDN.');
+            };
+            document.head.appendChild(s);
         }
-        window.__qrV12Cargando = true;
-        const s = document.createElement('script');
-        s.src = 'https://unpkg.com/html5-qrcode';
-        s.async = true;
-        s.onload = () => {
-            window.__qrV12Listo = true;
-            window.__qrV12Cargando = false;
-            setTimeout(() => {
-                if (typeof Html5QrcodeScanner === 'undefined') {
-                    setError('Libreria cargada pero sin Html5QrcodeScanner.');
-                    return;
-                }
-                iniciarScanner();
-            }, 50);
-        };
-        s.onerror = () => {
-            window.__qrV12Cargando = false;
-            setError('Error al cargar html5-qrcode del CDN.');
-        };
-        document.head.appendChild(s);
     }
     """,
 )
 
 
-def qr_scanner(key="qr_scanner", on_scan=None):
+def qr_scanner(key="qr_scanner", on_scan=None,
+               feedback_kind="", feedback_texto="", feedback_ts=0):
     """
     Monta el componente escaner QR.
-    El sonido/voz lo dispara el app.py via window.__qrFeedback(kind, texto)
-    con kind: 'nuevo' | 'tardanza' | 'duplicado' | 'bloqueado' | 'error'
+    El feedback (kind, texto, ts) se pasa como args al componente,
+    y el JS interno reproduce pitido + voz robotica.
     """
     if on_scan is None:
         on_scan = lambda: None
     return QR_SCANNER_COMPONENT(
         key=key,
         on_qr_dni_change=on_scan,
+        feedback_kind=feedback_kind,
+        feedback_texto=feedback_texto,
+        feedback_ts=feedback_ts,
     )
