@@ -560,32 +560,70 @@ def _normalizar_grado(n):
 
 def validar_importacion(df, mapeo):
     errs = []; val = []; con = obtener_conexion(); vistos = {}
+
+    def _limpiar(v):
+        """Convierte cualquier valor a string limpio, quitando .0 de floats."""
+        if v is None:
+            return ""
+        if isinstance(v, float):
+            if pd.isna(v):
+                return ""
+            # Si es entero disfrazado de float (12345678.0 -> "12345678")
+            if v == int(v):
+                return str(int(v))
+            return str(v)
+        if isinstance(v, int):
+            return str(v)
+        s = str(v).strip()
+        # Por si viene como texto "12345678.0"
+        if s.endswith(".0") and s[:-2].isdigit():
+            s = s[:-2]
+        # Si pandas convirtio NaN en "nan"
+        if s.lower() == "nan":
+            return ""
+        return s
+
     for idx, fila in df.iterrows():
         nf = idx + 2
         try:
-            dni = str(fila[mapeo["dni"]]).strip()
-            nom = str(fila[mapeo["nombres"]]).strip()
-            ap = str(fila[mapeo["apellido_paterno"]]).strip()
-            am = str(fila[mapeo["apellido_materno"]]).strip() if mapeo.get("apellido_materno") else ""
-            gr = _normalizar_grado(str(fila[mapeo["grado"]]))
-            sec = str(fila[mapeo["seccion"]]).strip().upper()
-            tur = str(fila[mapeo["turno"]]).strip().lower()
-            an = str(fila[mapeo["apoderado_nombre"]]).strip() if mapeo.get("apoderado_nombre") else ""
-            at = str(fila[mapeo["apoderado_telefono"]]).strip() if mapeo.get("apoderado_telefono") else ""
-            if not dni: errs.append({"fila": nf, "motivo": "DNI vacio"}); continue
-            if not re.fullmatch(r"\d{8}", dni): errs.append({"fila": nf, "motivo": "DNI invalido '" + dni + "'"}); continue
-            if dni in vistos: errs.append({"fila": nf, "motivo": "DNI " + dni + " duplicado"}); continue
-            if not nom or not ap or not gr or not sec: errs.append({"fila": nf, "motivo": "Faltan campos"}); continue
+            dni = _limpiar(fila[mapeo["dni"]])
+            nom = _limpiar(fila[mapeo["nombres"]])
+            ap = _limpiar(fila[mapeo["apellido_paterno"]])
+            am = _limpiar(fila[mapeo["apellido_materno"]]) if mapeo.get("apellido_materno") else ""
+            gr = _normalizar_grado(_limpiar(fila[mapeo["grado"]]))
+            sec = _limpiar(fila[mapeo["seccion"]]).upper()
+            tur = _limpiar(fila[mapeo["turno"]]).lower()
+            an = _limpiar(fila[mapeo["apoderado_nombre"]]) if mapeo.get("apoderado_nombre") else ""
+            at = _limpiar(fila[mapeo["apoderado_telefono"]]) if mapeo.get("apoderado_telefono") else ""
+
+            if not dni:
+                errs.append({"fila": nf, "motivo": "DNI vacio"}); continue
+            if not re.fullmatch(r"\d{8}", dni):
+                errs.append({"fila": nf, "motivo": "DNI invalido '" + dni + "'"}); continue
+            if dni in vistos:
+                errs.append({"fila": nf, "motivo": "DNI " + dni + " duplicado"}); continue
+            if not nom or not ap or not gr or not sec:
+                errs.append({"fila": nf, "motivo": "Faltan campos"}); continue
             if not con.execute("SELECT id FROM grados WHERE nombre=?", (gr,)).fetchone():
                 errs.append({"fila": nf, "motivo": "Grado '" + gr + "' no existe"}); continue
-            if tur in ("mañana","manana","m","am","mñ"): tn = "Mañana"
-            elif tur in ("tarde","t","tm","pm"): tn = "Tarde"
-            else: errs.append({"fila": nf, "motivo": "Turno '" + tur + "'"}); continue
+
+            if tur in ("mañana", "manana", "m", "am", "mñ"):
+                tn = "Mañana"
+            elif tur in ("tarde", "t", "tm", "pm"):
+                tn = "Tarde"
+            else:
+                errs.append({"fila": nf, "motivo": "Turno '" + tur + "'"}); continue
+
             vistos[dni] = nf
-            val.append({"dni": dni, "nombres": nom, "apellido_paterno": ap, "apellido_materno": am,
-                        "grado": gr, "seccion": sec, "turno": tn, "apoderado_nombre": an, "apoderado_telefono": at})
+            val.append({
+                "dni": dni, "nombres": nom,
+                "apellido_paterno": ap, "apellido_materno": am,
+                "grado": gr, "seccion": sec, "turno": tn,
+                "apoderado_nombre": an, "apoderado_telefono": at
+            })
         except (KeyError, ValueError, TypeError) as e:
             errs.append({"fila": nf, "motivo": "Error: " + str(e)})
+
     return val, errs, {"total": len(df), "validas": len(val), "errores": len(errs)}
 
 def insertar_alumnos_validos(val):
