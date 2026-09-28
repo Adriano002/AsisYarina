@@ -1,7 +1,6 @@
-
 import streamlit as st
 QR_SCANNER_COMPONENT = st.components.v2.component(
-    name="mi_qr_scanner_v13",
+    name="mi_qr_scanner_v15",
     isolate_styles=False,
     html="""
     <div id="qr-wrapper">
@@ -11,301 +10,189 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
     </div>
     """,
     css="""
-    #qr-wrapper {
-        width: 100%;
-        max-width: 500px;
-        margin: 0 auto;
-    }
+    #qr-wrapper { width: 100%; max-width: 500px; margin: 0 auto; }
     #qr-reader {
-        border-radius: 8px;
-        overflow: hidden;
-        border: 2px solid #E65100;
-        background: #000;
-        min-height: 260px;
+        border-radius: 8px; overflow: hidden;
+        border: 2px solid #E65100; background: #000; min-height: 260px;
     }
     #qr-reader video {
         border-radius: 6px;
-        width: 100% !important;
-        height: auto !important;
+        width: 100% !important; height: auto !important;
     }
     #qr-status {
-        text-align: center;
-        font-size: 13px;
-        margin-top: 8px;
+        text-align: center; font-size: 13px; margin-top: 8px;
         color: #666;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
     #qr-error {
-        text-align: center;
-        font-size: 13px;
-        margin-top: 8px;
-        color: #C62828;
-        font-weight: 600;
+        text-align: center; font-size: 13px; margin-top: 8px;
+        color: #C62828; font-weight: 600;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        padding: 10px;
-        border: 1px solid #C62828;
-        border-radius: 6px;
+        padding: 10px; border: 1px solid #C62828; border-radius: 6px;
         background: #f8d7da;
     }
     #qr-reader button {
-        background: #E65100 !important;
-        color: white !important;
-        border: none !important;
-        border-radius: 6px !important;
-        padding: 8px 16px !important;
-        font-weight: 600 !important;
-        cursor: pointer !important;
-        margin: 4px !important;
+        background: #E65100 !important; color: white !important;
+        border: none !important; border-radius: 6px !important;
+        padding: 8px 16px !important; font-weight: 600 !important;
+        cursor: pointer !important; margin: 4px !important;
     }
-    #qr-reader button:hover {
-        background: #BF360C !important;
-    }
+    #qr-reader button:hover { background: #BF360C !important; }
     #qr-reader select {
-        border-radius: 6px !important;
-        padding: 6px 10px !important;
-        margin: 4px !important;
-        border: 1px solid #ccc !important;
+        border-radius: 6px !important; padding: 6px 10px !important;
+        margin: 4px !important; border: 1px solid #ccc !important;
     }
-    #qr-reader a {
-        color: #E65100 !important;
-        font-weight: 600 !important;
-    }
+    #qr-reader a { color: #E65100 !important; font-weight: 600 !important; }
     """,
     js="""
     export default function(component) {
         const { setTriggerValue } = component;
         let scanner = null;
         let iniciado = false;
-        let ultimaVozTs = 0;
         let ultimoFbKey = "";
-
-        // ============================================================
-        // MOTOR DE AUDIO (Web Audio API)
-        // ============================================================
         let audioCtx = null;
+
+        console.log("[QR] init. args =", component.args);
+      
         function getAudioCtx() {
             if (!audioCtx) {
                 try {
                     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                    console.log("[QR] AudioContext creado. state:", audioCtx.state);
                 } catch (e) {
-                    console.warn('[QR] no se pudo crear AudioContext:', e);
+                    console.warn("[QR] AudioContext error:", e);
                 }
             }
-            if (audioCtx && audioCtx.state === 'suspended') {
-                audioCtx.resume().catch(() => {});
+            if (audioCtx && audioCtx.state === "suspended") {
+                audioCtx.resume().then(() => {
+                    console.log("[QR] AudioContext reanudado. state:", audioCtx.state);
+                }).catch((e) => console.warn("[QR] resume error:", e));
             }
             return audioCtx;
         }
 
-        // ============================================================
-        // VOZ ROBOTICA (Web Speech API)
-        // ============================================================
-        let vozElegida = null;
-        function elegirVoz() {
-            if (!window.speechSynthesis) return null;
-            const voces = window.speechSynthesis.getVoices();
-            if (!voces || voces.length === 0) return null;
-            const orden = ["es-PE", "es-MX", "es-US", "es-419", "es-ES"];
-            for (const lang of orden) {
-                const v = voces.find(x => x.lang === lang);
-                if (v) return v;
-            }
-            return voces.find(x => x.lang && x.lang.startsWith("es")) || voces[0];
-        }
-        if (window.speechSynthesis) {
-            window.speechSynthesis.onvoiceschanged = () => { vozElegida = elegirVoz(); };
-            vozElegida = elegirVoz();
-        }
-
-        function hablar(texto, opciones) {
-            if (!window.speechSynthesis) return;
-            const ahora = Date.now();
-            if (ahora - ultimaVozTs < 400) return;
-            ultimaVozTs = ahora;
-            try {
-                window.speechSynthesis.cancel();
-                const u = new SpeechSynthesisUtterance(texto);
-                if (!vozElegida) vozElegida = elegirVoz();
-                if (vozElegida) u.voice = vozElegida;
-                u.lang = (vozElegida && vozElegida.lang) || "es-PE";
-                u.rate = (opciones && opciones.rate) || 1.0;
-                u.pitch = (opciones && opciones.pitch) || 0.5;
-                u.volume = (opciones && opciones.volume) || 1.0;
-                window.speechSynthesis.speak(u);
-            } catch (e) {
-                console.warn('[QR] error voz:', e);
-            }
-        }
-
-        // ============================================================
-        // PITIDOS SINTETIZADOS
-        // ============================================================
         function _tono(freq, dur, tipo, vol, delay) {
             const ctx = getAudioCtx();
-            if (!ctx) return;
+            if (!ctx) { console.warn("[QR] no ctx"); return; }
             const t0 = ctx.currentTime + (delay || 0);
             const osc = ctx.createOscillator();
             const g = ctx.createGain();
             osc.connect(g); g.connect(ctx.destination);
-            osc.type = tipo || 'sine';
+            osc.type = tipo || "sine";
             osc.frequency.setValueAtTime(freq, t0);
             g.gain.setValueAtTime(0, t0);
-            g.gain.linearRampToValueAtTime(vol || 0.3, t0 + 0.015);
+            g.gain.linearRampToValueAtTime(vol || 0.35, t0 + 0.015);
             g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
             osc.start(t0);
             osc.stop(t0 + dur + 0.02);
+            console.log("[QR] tono:", freq, "Hz", tipo, "dur", dur);
         }
 
         function pitidoNuevo() {
-            _tono(523, 0.12, 'sine', 0.35, 0);
-            _tono(659, 0.15, 'sine', 0.35, 0.09);
+            _tono(523, 0.12, "sine", 0.40, 0);
+            _tono(659, 0.15, "sine", 0.40, 0.09);
         }
         function pitidoTardanza() {
-            _tono(440, 0.25, 'sine', 0.30, 0);
+            _tono(440, 0.25, "sine", 0.35, 0);
         }
         function pitidoDuplicado() {
-            _tono(233, 0.18, 'square', 0.26, 0);
-            _tono(185, 0.22, 'square', 0.26, 0.20);
+            _tono(233, 0.18, "square", 0.30, 0);
+            _tono(185, 0.22, "square", 0.30, 0.20);
         }
         function pitidoBloqueado() {
-            _tono(180, 0.15, 'sawtooth', 0.30, 0);
-            _tono(140, 0.15, 'sawtooth', 0.30, 0.18);
-            _tono(100, 0.30, 'sawtooth', 0.30, 0.36);
+            _tono(180, 0.15, "sawtooth", 0.35, 0);
+            _tono(140, 0.15, "sawtooth", 0.35, 0.18);
+            _tono(100, 0.30, "sawtooth", 0.35, 0.36);
         }
         function pitidoError() {
-            _tono(330, 0.10, 'square', 0.28, 0);
+            _tono(330, 0.10, "square", 0.32, 0);
         }
 
-        // ============================================================
-        // UTILIDADES
-        // ============================================================
-        function setStatus(t) {
-            const el = document.getElementById('qr-status');
-            if (el) { el.textContent = t; el.style.display = 'block'; }
-        }
-        function setError(t) {
-            const e = document.getElementById('qr-error');
-            const s = document.getElementById('qr-status');
-            if (e) { e.textContent = t; e.style.display = 'block'; }
-            if (s) s.style.display = 'none';
-            console.error('[QR]', t);
-        }
-
-        // ============================================================
-        // REPRODUCIR FEEDBACK SEGUN KIND
-        // ============================================================
+        
         function reproducirFeedback(kind, texto) {
+            console.log("[QR] >>> reproducirFeedback:", kind, "|", texto);
             try {
                 getAudioCtx();
                 switch (kind) {
-                    case "nuevo":
-                        setStatus("QR: " + (texto || ""));
-                        pitidoNuevo();
-                        hablar("Puntual", { pitch: 0.55, rate: 1.05 });
-                        break;
-                    case "tardanza":
-                        setStatus("QR: " + (texto || "") + " (tardanza)");
-                        pitidoTardanza();
-                        hablar("Tardanza", { pitch: 0.55, rate: 0.95 });
-                        break;
-                    case "duplicado":
-                        setStatus("QR duplicado: " + (texto || ""));
-                        pitidoDuplicado();
-                        hablar("Duplicado", { pitch: 0.40, rate: 0.95 });
-                        break;
-                    case "bloqueado":
-                        setStatus("ALUMNO BLOQUEADO: " + (texto || ""));
-                        pitidoBloqueado();
-                        hablar("Alumno bloqueado", { pitch: 0.35, rate: 0.90, volume: 1.0 });
-                        break;
+                    case "nuevo":      setStatus("QR: " + (texto || "")); pitidoNuevo(); break;
+                    case "tardanza":   setStatus("QR tardanza: " + (texto || "")); pitidoTardanza(); break;
+                    case "duplicado":  setStatus("QR duplicado: " + (texto || "")); pitidoDuplicado(); break;
+                    case "bloqueado":  setStatus("BLOQUEADO: " + (texto || "")); pitidoBloqueado(); break;
                     case "error":
-                    default:
-                        setStatus("Error: " + (texto || ""));
-                        pitidoError();
-                        hablar("Error", { pitch: 0.50, rate: 1.00 });
-                        break;
+                    default:           setStatus("Error: " + (texto || "")); pitidoError(); break;
                 }
-            } catch (e) {
-                console.error('[QR] reproducirFeedback error:', e);
-            }
+            } catch (e) { console.error("[QR] reproducirFeedback error:", e); }
         }
 
-        // ============================================================
-        // EXPONER AL PADRE (por si el puente tambien funciona)
-        // ============================================================
-        window.__qrFeedback = function(kind, texto) {
-            reproducirFeedback(kind, texto);
-        };
+        window.__qrFeedback = reproducirFeedback;
 
-        // ============================================================
-        // REACCIONAR A ARGS ENVIADOS DESDE PYTHON
-        // ============================================================
+        function leerArgs() {
+            try {
+                const c = component || {};
+                const fuentes = [c.args, c.data, c.value, c.props, c];
+                for (const f of fuentes) {
+                    if (f && typeof f === "object" &&
+                        ("feedback_kind" in f || "feedback_ts" in f)) {
+                        return {
+                            kind: f.feedback_kind || "",
+                            texto: f.feedback_texto || "",
+                            ts: f.feedback_ts || 0
+                        };
+                    }
+                }
+                return null;
+            } catch (e) { return null; }
+        }
+
         function chequearFeedback() {
-            try {
-                const a = (component && component.args) ? component.args : {};
-                const kind = a.feedback_kind || "";
-                const texto = a.feedback_texto || "";
-                const ts = a.feedback_ts || 0;
-                if (!kind) return;
-                const key = kind + "|" + texto + "|" + ts;
-                if (key === ultimoFbKey) return;
-                ultimoFbKey = key;
-                reproducirFeedback(kind, texto);
-            } catch (e) {
-                console.warn('[QR] args check error:', e);
-            }
+            const a = leerArgs();
+            if (!a || !a.kind) return;
+            const key = a.kind + "|" + a.texto + "|" + a.ts;
+            if (key === ultimoFbKey) return;
+            ultimoFbKey = key;
+            reproducirFeedback(a.kind, a.texto);
         }
 
-        // Ejecutar inmediatamente y tambien tras un pequeno delay
         chequearFeedback();
-        setTimeout(chequearFeedback, 150);
+        setTimeout(chequearFeedback, 250);
+        setTimeout(chequearFeedback, 600);
+        setTimeout(chequearFeedback, 1200);
+        setInterval(chequearFeedback, 800);
 
-        // Si la version de Streamlit expone onArgsChange, usarlo
-        if (typeof component.onArgsChange === 'function') {
-            try {
-                component.onArgsChange(() => chequearFeedback());
-            } catch (e) {
-                console.warn('[QR] onArgsChange no disponible:', e);
-            }
+        if (typeof component.onArgsChange === "function") {
+            try { component.onArgsChange(() => chequearFeedback()); }
+            catch (e) {}
         }
 
-        // ============================================================
-        // SCANNER
-        // ============================================================
+
+        function setStatus(t) {
+            const el = document.getElementById("qr-status");
+            if (el) { el.textContent = t; el.style.display = "block"; }
+        }
+        function setError(t) {
+            const e = document.getElementById("qr-error");
+            const s = document.getElementById("qr-status");
+            if (e) { e.textContent = t; e.style.display = "block"; }
+            if (s) s.style.display = "none";
+            console.error("[QR]", t);
+        }
+
+    
         function iniciarScanner() {
             if (iniciado) return;
-            if (typeof Html5QrcodeScanner === 'undefined') {
-                setError('Libreria QR no cargada.');
-                return;
-            }
+            if (typeof Html5QrcodeScanner === "undefined") { setError("Libreria QR no cargada."); return; }
             if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-                setError('Tu navegador no soporta acceso a camara, o no estas en HTTPS.');
-                return;
+                setError("Sin acceso a camara o no estas en HTTPS."); return;
             }
-            const reader = document.getElementById('qr-reader');
-            if (!reader) {
-                setError('Contenedor qr-reader no existe.');
-                return;
-            }
-
-            if (scanner) {
-                try { scanner.clear(); } catch (e) {}
-                scanner = null;
-            }
-            reader.innerHTML = '';
+            const reader = document.getElementById("qr-reader");
+            if (!reader) { setError("Contenedor no existe."); return; }
+            if (scanner) { try { scanner.clear(); } catch(e){} scanner = null; }
+            reader.innerHTML = "";
             iniciado = true;
-
             getAudioCtx();
-            if (window.speechSynthesis) {
-                try {
-                    const u = new SpeechSynthesisUtterance("");
-                    window.speechSynthesis.speak(u);
-                } catch (e) {}
-            }
 
             setTimeout(() => {
                 if (!iniciado) return;
-
                 scanner = new Html5QrcodeScanner(
                     "qr-reader",
                     {
@@ -318,101 +205,60 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                     },
                     false
                 );
-
                 const onScanSuccess = (texto) => {
-                    try {
-                        const m = texto.match(/\\b(\\d{8})\\b/);
-                        if (!m) return;
-                        const dni = m[1];
-                        setTriggerValue("qr_dni", dni);
-                    } catch (e) {
-                        console.error('[QR] error en onScanSuccess:', e);
-                    }
+                    const m = texto.match(/\\b(\\d{8})\\b/);
+                    if (!m) return;
+                    setTriggerValue("qr_dni", m[1]);
                 };
-
                 const onScanError = () => {};
-
-                let resultado;
-                try {
-                    resultado = scanner.render(onScanSuccess, onScanError);
-                } catch (e) {
-                    const msg = (e && e.message) ? e.message : String(e);
-                    setError('Error al iniciar: ' + msg);
-                    iniciado = false;
-                    return;
+                let r;
+                try { r = scanner.render(onScanSuccess, onScanError); }
+                catch (e) {
+                    setError("Error al iniciar: " + ((e && e.message) || e));
+                    iniciado = false; return;
                 }
-
-                if (resultado && typeof resultado.then === 'function') {
-                    resultado
-                        .then(() => setStatus('Camara activa.'))
-                        .catch((e) => {
-                            const msg = (e && e.message) ? e.message : String(e);
-                            if (msg.includes('NotAllowedError')) {
-                                setError('Permiso de camara denegado. Acepta el permiso o usa HTTPS.');
-                            } else if (msg.includes('NotFoundError')) {
-                                setError('No se encontro ninguna camara en este dispositivo.');
-                            } else if (msg.includes('NotReadableError')) {
-                                setError('La camara esta siendo usada por otra aplicacion.');
-                            } else if (msg.includes('AbortError')) {
-                                setError('Firefox aborto el inicio de la camara. Recarga la pagina e intenta de nuevo.');
-                            } else {
-                                setError('Error camara: ' + msg);
-                            }
-                            iniciado = false;
-                        });
+                if (r && typeof r.then === "function") {
+                    r.then(() => setStatus("Camara activa.")).catch((e) => {
+                        setError("Error camara: " + ((e && e.message) || e));
+                        iniciado = false;
+                    });
                 } else {
-                    setStatus('Camara activa.');
+                    setStatus("Camara activa.");
                 }
             }, 500);
         }
 
-        // ============================================================
-        // CARGA DE LIBRERIA
-        // ============================================================
-        window.addEventListener('beforeunload', () => {
-            if (scanner) {
-                try { scanner.clear(); } catch (e) {}
-                scanner = null;
-            }
-            iniciado = false;
-        });
-
-        if (window.__qrV13Listo && typeof Html5QrcodeScanner !== 'undefined') {
+      
+        if (window.__qrV15Listo && typeof Html5QrcodeScanner !== "undefined") {
             iniciarScanner();
-        } else if (window.__qrV13Cargando) {
+        } else if (window.__qrV15Cargando) {
             let n = 0;
             const t = setInterval(() => {
                 n++;
-                if (typeof Html5QrcodeScanner !== 'undefined') {
+                if (typeof Html5QrcodeScanner !== "undefined") {
                     clearInterval(t);
-                    window.__qrV13Listo = true;
-                    window.__qrV13Cargando = false;
+                    window.__qrV15Listo = true;
+                    window.__qrV15Cargando = false;
                     iniciarScanner();
                 } else if (n > 100) {
                     clearInterval(t);
-                    window.__qrV13Cargando = false;
-                    setError('Timeout cargando libreria.');
+                    window.__qrV15Cargando = false;
+                    setError("Timeout cargando libreria.");
                 }
             }, 100);
         } else {
-            window.__qrV13Cargando = true;
-            const s = document.createElement('script');
-            s.src = 'https://unpkg.com/html5-qrcode';
+            window.__qrV15Cargando = true;
+            const s = document.createElement("script");
+            s.src = "https://unpkg.com/html5-qrcode";
             s.async = true;
             s.onload = () => {
-                window.__qrV13Listo = true;
-                window.__qrV13Cargando = false;
-                setTimeout(() => {
-                    if (typeof Html5QrcodeScanner === 'undefined') {
-                        setError('Libreria cargada pero sin Html5QrcodeScanner.');
-                        return;
-                    }
-                    iniciarScanner();
-                }, 50);
+                window.__qrV15Listo = true;
+                window.__qrV15Cargando = false;
+                setTimeout(iniciarScanner, 50);
             };
             s.onerror = () => {
-                window.__qrV13Cargando = false;
-                setError('Error al cargar html5-qrcode del CDN.');
+                window.__qrV15Cargando = false;
+                setError("Error al cargar html5-qrcode del CDN.");
             };
             document.head.appendChild(s);
         }
@@ -420,14 +266,8 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
     """,
 )
 
-
 def qr_scanner(key="qr_scanner", on_scan=None,
                feedback_kind="", feedback_texto="", feedback_ts=0):
-    """
-    Monta el componente escaner QR.
-    El feedback (kind, texto, ts) se pasa como args al componente,
-    y el JS interno reproduce pitido + voz robotica.
-    """
     if on_scan is None:
         on_scan = lambda: None
     return QR_SCANNER_COMPONENT(
