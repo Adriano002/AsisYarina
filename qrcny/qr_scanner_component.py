@@ -1,10 +1,10 @@
 # qr_scanner_component.py
 # Componente propio de escaneo QR para Streamlit.
-# Incluye pitido moderno al detectar un QR (para referencia del auxiliar).
+# Pitido bueno al detectar un DNI nuevo, pitido feo si vuelve a escanear el mismo DNI.
 import streamlit as st
 
 QR_SCANNER_COMPONENT = st.components.v2.component(
-    name="mi_qr_scanner_v8",
+    name="mi_qr_scanner_v10",
     isolate_styles=False,
     html="""
     <div id="qr-wrapper">
@@ -78,10 +78,10 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
     export default function(component) {
         const { setTriggerValue } = component;
         let ultimoDni = null;
-        let ultimoTs = 0;
         let scanner = null;
         let iniciado = false;
         let ultimoPitidoTs = 0;
+        let ultimoPitidoMaloTs = 0;
 
         // ============================================================
         // MOTOR DE AUDIO (Web Audio API) - sin archivos externos
@@ -101,7 +101,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             return audioCtx;
         }
 
-        // Pitido moderno: dos notas ascendentes, suave y limpio
+        // Pitido BUENO: dos notas ascendentes, suave y limpio (DO -> MI)
         function pitidoSimple() {
             const ctx = getAudioCtx();
             if (!ctx) return;
@@ -111,7 +111,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             ultimoPitidoTs = ahora;
 
             try {
-                // Nota 1: DO agudo (523 Hz) - suave
                 const osc1 = ctx.createOscillator();
                 const gain1 = ctx.createGain();
                 osc1.connect(gain1);
@@ -126,7 +125,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                 osc1.start(ctx.currentTime);
                 osc1.stop(ctx.currentTime + 0.14);
 
-                // Nota 2: MI agudo (659 Hz) - sube un poquito
                 const t2 = ctx.currentTime + 0.09;
                 const osc2 = ctx.createOscillator();
                 const gain2 = ctx.createGain();
@@ -143,6 +141,52 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                 osc2.stop(t2 + 0.17);
             } catch (e) {
                 console.warn('[QR] error pitido:', e);
+            }
+        }
+
+        // Pitido FEO: dos notas graves descendentes con onda cuadrada (buzz de error)
+        function pitidoMalo() {
+            const ctx = getAudioCtx();
+            if (!ctx) return;
+
+            const ahora = Date.now();
+            if (ahora - ultimoPitidoMaloTs < 600) return; // anti-spam propio
+            ultimoPitidoMaloTs = ahora;
+
+            try {
+                const t1 = ctx.currentTime;
+                const osc1 = ctx.createOscillator();
+                const gain1 = ctx.createGain();
+                osc1.connect(gain1);
+                gain1.connect(ctx.destination);
+                osc1.type = 'square';
+                osc1.frequency.setValueAtTime(233, t1);
+
+                gain1.gain.setValueAtTime(0, t1);
+                gain1.gain.linearRampToValueAtTime(0.28, t1 + 0.01);
+                gain1.gain.setValueAtTime(0.28, t1 + 0.13);
+                gain1.gain.exponentialRampToValueAtTime(0.001, t1 + 0.18);
+
+                osc1.start(t1);
+                osc1.stop(t1 + 0.20);
+
+                const t2 = t1 + 0.20;
+                const osc2 = ctx.createOscillator();
+                const gain2 = ctx.createGain();
+                osc2.connect(gain2);
+                gain2.connect(ctx.destination);
+                osc2.type = 'square';
+                osc2.frequency.setValueAtTime(185, t2);
+
+                gain2.gain.setValueAtTime(0, t2);
+                gain2.gain.linearRampToValueAtTime(0.28, t2 + 0.01);
+                gain2.gain.setValueAtTime(0.28, t2 + 0.15);
+                gain2.gain.exponentialRampToValueAtTime(0.001, t2 + 0.22);
+
+                osc2.start(t2);
+                osc2.stop(t2 + 0.24);
+            } catch (e) {
+                console.warn('[QR] error pitido malo:', e);
             }
         }
 
@@ -191,10 +235,8 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             reader.innerHTML = '';
             iniciado = true;
 
-            // Desbloquear audio con la primera interaccion
             getAudioCtx();
 
-            // CAMBIO 1: espera de 500ms para evitar AbortError en Firefox
             setTimeout(() => {
                 if (!iniciado) return;
 
@@ -205,7 +247,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                         qrbox: { width: 250, height: 250 },
                         aspectRatio: 1.0,
                         rememberLastUsedCamera: true,
-                        // CAMBIO 2: sin "exact" para que Firefox no aborte
                         videoConstraints: { facingMode: "environment" },
                         supportedScanTypes: [Html5QrcodeScanType.SCAN_TYPE_CAMERA]
                     },
@@ -217,10 +258,16 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                         const m = texto.match(/\\b(\\d{8})\\b/);
                         if (!m) return;
                         const dni = m[1];
-                        const t = Date.now() / 1000;
-                        if (dni === ultimoDni && (t - ultimoTs) < 3) return;
+
+                        // --- MISMO DNI QUE EL ULTIMO ESCANEADO: pitido feo ---
+                        if (dni === ultimoDni) {
+                            setStatus('QR repetido: ' + dni);
+                            pitidoMalo();
+                            return;
+                        }
+
+                        // --- DNI DISTINTO: pitido bueno ---
                         ultimoDni = dni;
-                        ultimoTs = t;
                         setStatus('QR: ' + dni);
                         pitidoSimple();
                         setTriggerValue("qr_dni", dni);
@@ -270,34 +317,34 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         // ============================================================
         window.addEventListener('beforeunload', destruirScanner);
 
-        if (window.__qrV8Listo && typeof Html5QrcodeScanner !== 'undefined') {
+        if (window.__qrV10Listo && typeof Html5QrcodeScanner !== 'undefined') {
             iniciarScanner();
             return;
         }
-        if (window.__qrV8Cargando) {
+        if (window.__qrV10Cargando) {
             let n = 0;
             const t = setInterval(() => {
                 n++;
                 if (typeof Html5QrcodeScanner !== 'undefined') {
                     clearInterval(t);
-                    window.__qrV8Listo = true;
-                    window.__qrV8Cargando = false;
+                    window.__qrV10Listo = true;
+                    window.__qrV10Cargando = false;
                     iniciarScanner();
                 } else if (n > 100) {
                     clearInterval(t);
-                    window.__qrV8Cargando = false;
+                    window.__qrV10Cargando = false;
                     setError('Timeout cargando libreria.');
                 }
             }, 100);
             return;
         }
-        window.__qrV8Cargando = true;
+        window.__qrV10Cargando = true;
         const s = document.createElement('script');
         s.src = 'https://unpkg.com/html5-qrcode';
         s.async = true;
         s.onload = () => {
-            window.__qrV8Listo = true;
-            window.__qrV8Cargando = false;
+            window.__qrV10Listo = true;
+            window.__qrV10Cargando = false;
             setTimeout(() => {
                 if (typeof Html5QrcodeScanner === 'undefined') {
                     setError('Libreria cargada pero sin Html5QrcodeScanner.');
@@ -307,7 +354,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             }, 50);
         };
         s.onerror = () => {
-            window.__qrV8Cargando = false;
+            window.__qrV10Cargando = false;
             setError('Error al cargar html5-qrcode del CDN.');
         };
         document.head.appendChild(s);
@@ -318,7 +365,9 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
 
 def qr_scanner(key="qr_scanner", on_scan=None):
     """
-    Monta el componente escaner QR con pitido moderno al detectar.
+    Monta el componente escaner QR.
+    - DNI distinto al ultimo: pitido bueno y dispara trigger.
+    - Mismo DNI que el ultimo: pitido feo, sin trigger.
     Devuelve el resultado con atributo .qr_dni
     """
     if on_scan is None:
