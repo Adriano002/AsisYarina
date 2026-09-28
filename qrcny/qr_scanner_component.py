@@ -1,11 +1,12 @@
 # qr_scanner_component.py
 # Componente de escaneo QR para Streamlit.
 # Registra window.parent.__qrFeedback(kind) para que Python dispare
-# 4 sonidos distintos: puntual | tardanza | duplicado | error.
+# 5 sonidos distintos: puntual | tardanza | duplicado | bloqueado | error.
+# Incluye recuperacion automatica de camara al volver a la pestaña.
 import streamlit as st
 
 QR_SCANNER_COMPONENT = st.components.v2.component(
-    name="mi_qr_scanner_v17",
+    name="mi_qr_scanner_v18",
     isolate_styles=False,
     html="""
     <div id="qr-wrapper">
@@ -80,6 +81,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         const { setTriggerValue } = component;
         let scanner = null;
         let iniciado = false;
+        let reiniciando = false;
 
         // ============================================================
         // MOTOR DE AUDIO
@@ -99,7 +101,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             return audioCtx;
         }
 
-        // Helper: un tono
         function _tono(freq, dur, tipo, vol, delay) {
             const ctx = getAudioCtx();
             if (!ctx) return;
@@ -119,34 +120,24 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         // ============================================================
         // 5 SONIDOS
         // ============================================================
-
-        // 1) PUNTUAL: DO -> MI -> SOL, subida alegre
         function sonidoPuntual() {
             _tono(523, 0.10, 'sine', 0.40, 0);
             _tono(659, 0.10, 'sine', 0.40, 0.10);
             _tono(784, 0.15, 'sine', 0.40, 0.20);
         }
-
-        // 2) TARDANZA: nota neutra, plana
         function sonidoTardanza() {
             _tono(440, 0.30, 'sine', 0.35, 0);
         }
-
-        // 3) DUPLICADO: buzz grave doble, fuerte
         function sonidoDuplicado() {
             _tono(220, 0.18, 'square', 0.45, 0);
             _tono(220, 0.18, 'square', 0.45, 0.22);
         }
-
-        // 4) ERROR (DNI no existe): disonancia horrible ascendente
         function sonidoError() {
             _tono(180, 0.15, 'sawtooth', 0.45, 0);
             _tono(250, 0.15, 'sawtooth', 0.45, 0.15);
             _tono(330, 0.15, 'sawtooth', 0.45, 0.30);
             _tono(440, 0.25, 'sawtooth', 0.45, 0.45);
         }
-
-        // 5) BLOQUEADO (por si acaso): triple buzz grave
         function sonidoBloqueado() {
             _tono(160, 0.15, 'sawtooth', 0.45, 0);
             _tono(120, 0.15, 'sawtooth', 0.45, 0.18);
@@ -172,7 +163,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             }
         }
 
-        // Registrar en window propio Y en window.parent (por si acaso)
         window.__qrFeedback = reproducir;
         try {
             window.parent.__qrFeedback = reproducir;
@@ -282,38 +272,118 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         }
 
         // ============================================================
+        // FIX MOVIL: recuperar camara al volver a la pestaña
+        // ============================================================
+        function pausarCamara() {
+            try {
+                const videos = document.querySelectorAll('#qr-reader video');
+                videos.forEach(v => {
+                    if (v.srcObject) {
+                        v.srcObject.getVideoTracks().forEach(t => {
+                            try { t.enabled = false; } catch (e) {}
+                        });
+                    }
+                });
+            } catch (e) {
+                console.warn('[QR] pausarCamara error:', e);
+            }
+        }
+
+        function reanudarCamara() {
+            try {
+                const videos = document.querySelectorAll('#qr-reader video');
+                let algunTrackVivo = false;
+                videos.forEach(v => {
+                    if (v.srcObject) {
+                        v.srcObject.getVideoTracks().forEach(t => {
+                            try {
+                                if (t.readyState === 'live') {
+                                    t.enabled = true;
+                                    algunTrackVivo = true;
+                                }
+                            } catch (e) {}
+                        });
+                    }
+                });
+                return algunTrackVivo;
+            } catch (e) {
+                console.warn('[QR] reanudarCamara error:', e);
+                return false;
+            }
+        }
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+                console.log('[QR] Volvio a la pestaña, revisando camara...');
+                // Dar un respiro al navegador para que restaure el stream
+                setTimeout(() => {
+                    const ok = reanudarCamara();
+                    if (!ok && iniciado && !reiniciando) {
+                        // El track murio: reiniciar todo el scanner
+                        reiniciando = true;
+                        console.log('[QR] Track muerto, reiniciando scanner...');
+                        try {
+                            const viejo = scanner;
+                            scanner = null;
+                            iniciado = false;
+                            if (viejo) { try { viejo.clear(); } catch(e){} }
+                        } catch (e) {}
+                        setTimeout(() => {
+                            reiniciando = false;
+                            iniciarScanner();
+                        }, 600);
+                    } else if (ok) {
+                        console.log('[QR] Track reanudado OK');
+                        setStatus('Camara activa.');
+                    }
+                }, 400);
+            } else {
+                console.log('[QR] Pestaña oculta, pausando camara...');
+                pausarCamara();
+            }
+        });
+
+        // Recuperar tambien cuando el iframe vuelve a ser visible
+        window.addEventListener('pageshow', () => {
+            console.log('[QR] pageshow, revisando estado...');
+            setTimeout(() => {
+                if (iniciado) reanudarCamara();
+            }, 300);
+        });
+
+        // ============================================================
         // CARGA DE LIBRERIA
         // ============================================================
         window.addEventListener('beforeunload', destruirScanner);
 
-        if (window.__qrV17Listo && typeof Html5QrcodeScanner !== 'undefined') {
+        if (window.__qrV18Listo && typeof Html5QrcodeScanner !== 'undefined') {
             iniciarScanner();
             return;
         }
-        if (window.__qrV17Cargando) {
+        if (window.__qrV18Cargando) {
             let n = 0;
             const t = setInterval(() => {
                 n++;
                 if (typeof Html5QrcodeScanner !== 'undefined') {
                     clearInterval(t);
-                    window.__qrV17Listo = true;
-                    window.__qrV17Cargando = false;
+                    window.__qrV18Listo = true;
+                    window.__qrV18Cargando = false;
                     iniciarScanner();
                 } else if (n > 100) {
                     clearInterval(t);
-                    window.__qrV17Cargando = false;
+                    window.__qrV18Cargando = false;
                     setError('Timeout cargando libreria.');
                 }
             }, 100);
             return;
         }
-        window.__qrV17Cargando = true;
+        window.__qrV18Cargando = true;
         const s = document.createElement('script');
         s.src = 'https://unpkg.com/html5-qrcode';
         s.async = true;
         s.onload = () => {
-            window.__qrV17Listo = true;
-            window.__qrV17Cargando = false;
+            window.__qrV18Listo = true;
+            window.__qrV18Cargando = false;
             setTimeout(() => {
                 if (typeof Html5QrcodeScanner === 'undefined') {
                     setError('Libreria cargada pero sin Html5QrcodeScanner.');
@@ -323,7 +393,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             }, 50);
         };
         s.onerror = () => {
-            window.__qrV17Cargando = false;
+            window.__qrV18Cargando = false;
             setError('Error al cargar html5-qrcode del CDN.');
         };
         document.head.appendChild(s);
