@@ -1,10 +1,11 @@
 # qr_scanner_component.py
 # Componente de escaneo QR para Streamlit.
-# Pitido bueno al escanear un DNI nuevo, pitido feo si ese DNI YA fue escaneado antes.
+# Expone window.__qrFeedback(kind, texto) para que el app.py le indique
+# qué sonido/voz reproducir: 'nuevo' | 'tardanza' | 'duplicado' | 'bloqueado' | 'error'
 import streamlit as st
 
 QR_SCANNER_COMPONENT = st.components.v2.component(
-    name="mi_qr_scanner_v11",
+    name="mi_qr_scanner_v12",
     isolate_styles=False,
     html="""
     <div id="qr-wrapper">
@@ -77,14 +78,13 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
     js="""
     export default function(component) {
         const { setTriggerValue } = component;
-        const dnisVistos = new Set();   // <- memoria de TODOS los DNI escaneados
         let scanner = null;
         let iniciado = false;
         let ultimoPitidoTs = 0;
-        let ultimoPitidoMaloTs = 0;
+        let ultimaVozTs = 0;
 
         // ============================================================
-        // MOTOR DE AUDIO (Web Audio API) - sin archivos externos
+        // MOTOR DE AUDIO (Web Audio API)
         // ============================================================
         let audioCtx = null;
         function getAudioCtx() {
@@ -101,94 +101,127 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             return audioCtx;
         }
 
-        // Pitido BUENO: dos notas ascendentes, suave y limpio (DO -> MI)
-        function pitidoSimple() {
-            const ctx = getAudioCtx();
-            if (!ctx) return;
+        // ============================================================
+        // VOZ ROBOTICA (Web Speech API)
+        // ============================================================
+        let vozElegida = null;
+        function elegirVoz() {
+            if (!window.speechSynthesis) return null;
+            const voces = window.speechSynthesis.getVoices();
+            if (!voces || voces.length === 0) return null;
+            // Prioridad: es-PE > es-MX > es-US > es-ES > cualquier es
+            const orden = ["es-PE", "es-MX", "es-US", "es-419", "es-ES"];
+            for (const lang of orden) {
+                const v = voces.find(x => x.lang === lang);
+                if (v) return v;
+            }
+            return voces.find(x => x.lang && x.lang.startsWith("es")) || voces[0];
+        }
+        if (window.speechSynthesis) {
+            window.speechSynthesis.onvoiceschanged = () => { vozElegida = elegirVoz(); };
+            vozElegida = elegirVoz();
+        }
 
+        function hablar(texto, opciones) {
+            if (!window.speechSynthesis) return;
             const ahora = Date.now();
-            if (ahora - ultimoPitidoTs < 800) return;
-            ultimoPitidoTs = ahora;
+            if (ahora - ultimaVozTs < 500) return;  // anti-solape
+            ultimaVozTs = ahora;
 
             try {
-                const osc1 = ctx.createOscillator();
-                const gain1 = ctx.createGain();
-                osc1.connect(gain1);
-                gain1.connect(ctx.destination);
-                osc1.type = 'sine';
-                osc1.frequency.setValueAtTime(523, ctx.currentTime);
-
-                gain1.gain.setValueAtTime(0, ctx.currentTime);
-                gain1.gain.linearRampToValueAtTime(0.35, ctx.currentTime + 0.015);
-                gain1.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
-
-                osc1.start(ctx.currentTime);
-                osc1.stop(ctx.currentTime + 0.14);
-
-                const t2 = ctx.currentTime + 0.09;
-                const osc2 = ctx.createOscillator();
-                const gain2 = ctx.createGain();
-                osc2.connect(gain2);
-                gain2.connect(ctx.destination);
-                osc2.type = 'sine';
-                osc2.frequency.setValueAtTime(659, t2);
-
-                gain2.gain.setValueAtTime(0, t2);
-                gain2.gain.linearRampToValueAtTime(0.35, t2 + 0.015);
-                gain2.gain.exponentialRampToValueAtTime(0.001, t2 + 0.15);
-
-                osc2.start(t2);
-                osc2.stop(t2 + 0.17);
+                window.speechSynthesis.cancel();
+                const u = new SpeechSynthesisUtterance(texto);
+                if (!vozElegida) vozElegida = elegirVoz();
+                if (vozElegida) u.voice = vozElegida;
+                u.lang = (vozElegida && vozElegida.lang) || "es-PE";
+                u.rate = (opciones && opciones.rate) || 1.0;
+                u.pitch = (opciones && opciones.pitch) || 0.5;
+                u.volume = (opciones && opciones.volume) || 1.0;
+                window.speechSynthesis.speak(u);
             } catch (e) {
-                console.warn('[QR] error pitido:', e);
+                console.warn('[QR] error voz:', e);
             }
         }
 
-        // Pitido FEO: dos notas graves descendentes con onda cuadrada (buzz de error)
-        function pitidoMalo() {
+        // ============================================================
+        // PITIDOS SINTETIZADOS
+        // ============================================================
+        function _tono(freq, dur, tipo, vol, delay) {
             const ctx = getAudioCtx();
             if (!ctx) return;
-
-            const ahora = Date.now();
-            if (ahora - ultimoPitidoMaloTs < 600) return;
-            ultimoPitidoMaloTs = ahora;
-
-            try {
-                const t1 = ctx.currentTime;
-                const osc1 = ctx.createOscillator();
-                const gain1 = ctx.createGain();
-                osc1.connect(gain1);
-                gain1.connect(ctx.destination);
-                osc1.type = 'square';
-                osc1.frequency.setValueAtTime(233, t1);
-
-                gain1.gain.setValueAtTime(0, t1);
-                gain1.gain.linearRampToValueAtTime(0.28, t1 + 0.01);
-                gain1.gain.setValueAtTime(0.28, t1 + 0.13);
-                gain1.gain.exponentialRampToValueAtTime(0.001, t1 + 0.18);
-
-                osc1.start(t1);
-                osc1.stop(t1 + 0.20);
-
-                const t2 = t1 + 0.20;
-                const osc2 = ctx.createOscillator();
-                const gain2 = ctx.createGain();
-                osc2.connect(gain2);
-                gain2.connect(ctx.destination);
-                osc2.type = 'square';
-                osc2.frequency.setValueAtTime(185, t2);
-
-                gain2.gain.setValueAtTime(0, t2);
-                gain2.gain.linearRampToValueAtTime(0.28, t2 + 0.01);
-                gain2.gain.setValueAtTime(0.28, t2 + 0.15);
-                gain2.gain.exponentialRampToValueAtTime(0.001, t2 + 0.22);
-
-                osc2.start(t2);
-                osc2.stop(t2 + 0.24);
-            } catch (e) {
-                console.warn('[QR] error pitido malo:', e);
-            }
+            const t0 = ctx.currentTime + (delay || 0);
+            const osc = ctx.createOscillator();
+            const g = ctx.createGain();
+            osc.connect(g); g.connect(ctx.destination);
+            osc.type = tipo || 'sine';
+            osc.frequency.setValueAtTime(freq, t0);
+            g.gain.setValueAtTime(0, t0);
+            g.gain.linearRampToValueAtTime(vol || 0.3, t0 + 0.015);
+            g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+            osc.start(t0);
+            osc.stop(t0 + dur + 0.02);
         }
+
+        function pitidoNuevo() {           // Do -> Mi, agradable
+            _tono(523, 0.12, 'sine', 0.35, 0);
+            _tono(659, 0.15, 'sine', 0.35, 0.09);
+        }
+        function pitidoTardanza() {        // Una nota neutra
+            _tono(440, 0.25, 'sine', 0.30, 0);
+        }
+        function pitidoDuplicado() {       // Buzz grave descendente
+            _tono(233, 0.18, 'square', 0.26, 0);
+            _tono(185, 0.22, 'square', 0.26, 0.20);
+        }
+        function pitidoBloqueado() {       // Triple buzz grave, mas agresivo
+            _tono(180, 0.15, 'sawtooth', 0.30, 0);
+            _tono(140, 0.15, 'sawtooth', 0.30, 0.18);
+            _tono(100, 0.30, 'sawtooth', 0.30, 0.36);
+        }
+        function pitidoError() {           // Beep corto seco
+            _tono(330, 0.10, 'square', 0.28, 0);
+        }
+
+        // ============================================================
+        // API PUBLICA: la llama el app.py via __qrFeedback(kind, texto)
+        // ============================================================
+        window.__qrFeedback = function(kind, texto) {
+            try {
+                // Desbloquear audio por si aun no hubo interaccion previa
+                getAudioCtx();
+
+                switch (kind) {
+                    case "nuevo":
+                        setStatus("QR: " + (texto || ""));
+                        pitidoNuevo();
+                        hablar("Puntual", { pitch: 0.55, rate: 1.05 });
+                        break;
+                    case "tardanza":
+                        setStatus("QR: " + (texto || "") + " (tardanza)");
+                        pitidoTardanza();
+                        hablar("Tardanza", { pitch: 0.55, rate: 0.95 });
+                        break;
+                    case "duplicado":
+                        setStatus("QR duplicado: " + (texto || ""));
+                        pitidoDuplicado();
+                        hablar("Duplicado", { pitch: 0.4, rate: 0.95 });
+                        break;
+                    case "bloqueado":
+                        setStatus("ALUMNO BLOQUEADO: " + (texto || ""));
+                        pitidoBloqueado();
+                        hablar("Alumno bloqueado", { pitch: 0.35, rate: 0.9, volume: 1.0 });
+                        break;
+                    case "error":
+                    default:
+                        setStatus("Error: " + (texto || ""));
+                        pitidoError();
+                        hablar("Error", { pitch: 0.5, rate: 1.0 });
+                        break;
+                }
+            } catch (e) {
+                console.error('[QR] __qrFeedback error:', e);
+            }
+        };
 
         // ============================================================
         // UTILIDADES
@@ -236,6 +269,13 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             iniciado = true;
 
             getAudioCtx();
+            if (window.speechSynthesis) {
+                // "Despertar" la sintesis de voz (algunos navegadores la duermen)
+                try {
+                    const u = new SpeechSynthesisUtterance("");
+                    window.speechSynthesis.speak(u);
+                } catch (e) {}
+            }
 
             setTimeout(() => {
                 if (!iniciado) return;
@@ -258,18 +298,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                         const m = texto.match(/\\b(\\d{8})\\b/);
                         if (!m) return;
                         const dni = m[1];
-
-                        // --- DNI YA VISTO ANTES: pitido feo ---
-                        if (dnisVistos.has(dni)) {
-                            setStatus('QR repetido: ' + dni);
-                            pitidoMalo();
-                            return;
-                        }
-
-                        // --- DNI NUEVO: pitido bueno ---
-                        dnisVistos.add(dni);
-                        setStatus('QR: ' + dni);
-                        pitidoSimple();
+                        // Solo avisamos a Python. El decide el feedback.
                         setTriggerValue("qr_dni", dni);
                     } catch (e) {
                         console.error('[QR] error en onScanSuccess:', e);
@@ -317,34 +346,34 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         // ============================================================
         window.addEventListener('beforeunload', destruirScanner);
 
-        if (window.__qrV11Listo && typeof Html5QrcodeScanner !== 'undefined') {
+        if (window.__qrV12Listo && typeof Html5QrcodeScanner !== 'undefined') {
             iniciarScanner();
             return;
         }
-        if (window.__qrV11Cargando) {
+        if (window.__qrV12Cargando) {
             let n = 0;
             const t = setInterval(() => {
                 n++;
                 if (typeof Html5QrcodeScanner !== 'undefined') {
                     clearInterval(t);
-                    window.__qrV11Listo = true;
-                    window.__qrV11Cargando = false;
+                    window.__qrV12Listo = true;
+                    window.__qrV12Cargando = false;
                     iniciarScanner();
                 } else if (n > 100) {
                     clearInterval(t);
-                    window.__qrV11Cargando = false;
+                    window.__qrV12Cargando = false;
                     setError('Timeout cargando libreria.');
                 }
             }, 100);
             return;
         }
-        window.__qrV11Cargando = true;
+        window.__qrV12Cargando = true;
         const s = document.createElement('script');
         s.src = 'https://unpkg.com/html5-qrcode';
         s.async = true;
         s.onload = () => {
-            window.__qrV11Listo = true;
-            window.__qrV11Cargando = false;
+            window.__qrV12Listo = true;
+            window.__qrV12Cargando = false;
             setTimeout(() => {
                 if (typeof Html5QrcodeScanner === 'undefined') {
                     setError('Libreria cargada pero sin Html5QrcodeScanner.');
@@ -354,7 +383,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             }, 50);
         };
         s.onerror = () => {
-            window.__qrV11Cargando = false;
+            window.__qrV12Cargando = false;
             setError('Error al cargar html5-qrcode del CDN.');
         };
         document.head.appendChild(s);
@@ -366,9 +395,8 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
 def qr_scanner(key="qr_scanner", on_scan=None):
     """
     Monta el componente escaner QR.
-    - DNI nuevo (nunca escaneado en esta sesion): pitido bueno + trigger.
-    - DNI ya escaneado antes en esta sesion: pitido feo, sin trigger.
-    Devuelve el resultado con atributo .qr_dni
+    El sonido/voz lo dispara el app.py via window.__qrFeedback(kind, texto)
+    con kind: 'nuevo' | 'tardanza' | 'duplicado' | 'bloqueado' | 'error'
     """
     if on_scan is None:
         on_scan = lambda: None
