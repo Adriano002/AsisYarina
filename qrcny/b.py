@@ -1071,7 +1071,7 @@ def cierre_mensual_calendario(mes, anio, ids_sec, pid=None):
     )
     if df_al.empty:
         return pd.DataFrame()
-    abre = {"Puntual": "PUN", "Falta": "FAL", "Tardanza": "TAR", "Permiso": "PER"}
+
     asis = {}
     q_asis = ("SELECT alumno_id, fecha, estado, justificada FROM asistencias "
               "WHERE fecha BETWEEN ? AND ? AND tipo='clases'")
@@ -1082,34 +1082,31 @@ def cierre_mensual_calendario(mes, anio, ids_sec, pid=None):
     for r in con.execute(q_asis, p_asis).fetchall():
         key = (r["alumno_id"], r["fecha"])
         est = r["estado"]
-        if est == "Falta" and r["justificada"]:
-            est = "JUS"
+        # Solo P o F. Todo lo que no sea Falta se cuenta como P.
+        if est == "Falta":
+            asis[key] = "F"
         else:
-            est = abre.get(est, est[:3].upper())
-        asis[key] = est
+            asis[key] = "P"
+
     filas = []
     for _, al in df_al.iterrows():
-        fila = {"Apellidos": al["apellidos"], "Nombres": al["nombres"],
-                "Grado": al["grado"], "Seccion": al["seccion"], "Turno": al["turno"]}
-        tp = tf = tt = tj = 0
+        fila = {"Apellidos": al["apellidos"], "Nombres": al["nombres"]}
+        tp = tf = 0
         for d in dias:
             f_str = d.strftime("%Y-%m-%d")
             etiqueta = ["Lun","Mar","Mie","Jue","Vie","Sab","Dom"][d.weekday()] + " " + str(d.day).zfill(2)
             est = asis.get((al["alumno_id"], f_str), "-")
             fila[etiqueta] = est
-            if est == "PUN": tp += 1
-            elif est == "FAL": tf += 1
-            elif est == "TAR": tt += 1
-            elif est == "JUS": tj += 1
-        fila["Total PUN"] = tp
-        fila["Total FAL"] = tf
-        fila["Total TAR"] = tt
-        fila["Total JUS"] = tj
+            if est == "P": tp += 1
+            elif est == "F": tf += 1
+        fila["Total P"] = tp
+        fila["Total F"] = tf
         filas.append(fila)
+
     df = pd.DataFrame(filas)
-    cols_base = ["Apellidos", "Nombres", "Grado", "Seccion", "Turno"]
+    cols_base = ["Apellidos", "Nombres"]
     cols_dias = [c for c in df.columns if c not in cols_base and not c.startswith("Total")]
-    cols_tot = ["Total PUN", "Total FAL", "Total TAR", "Total JUS"]
+    cols_tot = ["Total P", "Total F"]
     return df[cols_base + cols_dias + cols_tot]
 
 def casos_toece(pid=None):
