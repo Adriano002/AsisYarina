@@ -852,31 +852,33 @@ def _procesar_escaneo(dni):
     if not u: return
     ok, tipo, msg, extra = registrar_entrada(dni, u, origen="qr")
 
+    # Decidir que sonido debe sonar
     if not ok and tipo == "ERROR":
         if "ya registro" in msg or "ya tiene" in msg:
-            feedback = "duplicado"
+            sonido = "duplicado"
+        elif "DNI no encontrado" in msg:
+            sonido = "error"     # DNI no existe
         else:
-            feedback = "error"
+            sonido = "error"
     elif tipo == "BLOQUEADO":
-        feedback = "bloqueado"
+        sonido = "bloqueado"
+    elif ok and tipo == "TARDANZA":
+        sonido = "tardanza"
     elif ok:
-        if tipo == "TARDANZA":
-            feedback = "tardanza"
-        else:
-            feedback = "nuevo"
+        sonido = "puntual"
     else:
-        feedback = "error"
+        sonido = "error"
 
     st.session_state.setdefault("_qr_mensajes", [])
     st.session_state["_qr_mensajes"].insert(0, {
         "dni": dni, "tipo": tipo, "mensaje": msg,
-        "extra": extra, "ts": time.time(), "feedback": feedback
+        "extra": extra, "ts": time.time()
     })
     st.session_state["_qr_mensajes"] = st.session_state["_qr_mensajes"][:10]
 
-    st.session_state["_qr_feedback_pendiente"] = {
-        "kind": feedback,
-        "texto": msg[:60],
+    # Guardar sonido pendiente para disparar en el proximo render
+    st.session_state["_qr_sonido_pendiente"] = {
+        "kind": sonido,
         "ts": time.time(),
     }
 def _render_mensaje_qr(msg):
@@ -907,19 +909,7 @@ def escaner_qr_continuo(key="qr_scanner"):
         pass
 
     mount_id = st.session_state.get("_qr_mount_id", 0)
-
-    fb = st.session_state.get("_qr_feedback_pendiente")
-    feedback_kind = fb["kind"] if fb else ""
-    feedback_texto = (fb["texto"] or "")[:60] if fb else ""
-    feedback_ts = fb.get("ts", 0) if fb else 0
-
-    result = qr_scanner(
-        key="qr_" + key + "_" + str(mount_id),
-        on_scan=_on_scan,
-        feedback_kind=feedback_kind,
-        feedback_texto=feedback_texto,
-        feedback_ts=feedback_ts,
-    )
+    result = qr_scanner(key="qr_" + key + "_" + str(mount_id), on_scan=_on_scan)
 
     if result is not None and getattr(result, "qr_dni", None):
         dni = result.qr_dni
@@ -928,8 +918,43 @@ def escaner_qr_continuo(key="qr_scanner"):
             st.session_state["_ultimo_qr_scan"] = {"dni": dni, "ts": time.time()}
             _procesar_escaneo(dni)
 
-    if fb:
-        st.session_state.pop("_qr_feedback_pendiente", None)
+    # Disparar sonido pendiente
+    sp = st.session_state.get("_qr_sonido_pendiente")
+    if sp and (time.time() - sp.get("ts", 0)) < 5:
+        kind_js = sp["kind"]
+        st.components.v1.html(f"""
+            <script>
+            (function() {{
+                let tries = 0;
+                const disparar = () => {{
+                    tries++;
+                    try {{
+                        // 1) intentar en el propio iframe padre
+                        if (window.parent && typeof window.parent.__qrFeedback === 'function') {{
+                            window.parent.__qrFeedback('{kind_js}');
+                            return;
+                        }}
+                    }} catch(e) {{}}
+                    try {{
+                        // 2) intentar en otros iframes hermanos
+                        const frames = document.querySelectorAll('iframe');
+                        for (const f of frames) {{
+                            try {{
+                                const w = f.contentWindow;
+                                if (w && typeof w.__qrFeedback === 'function') {{
+                                    w.__qrFeedback('{kind_js}');
+                                    return;
+                                }}
+                            }} catch(e) {{}}
+                        }}
+                    }} catch(e) {{}}
+                    if (tries < 60) setTimeout(disparar, 100);
+                }};
+                disparar();
+            }})();
+            </script>
+        """, height=0)
+        st.session_state.pop("_qr_sonido_pendiente", None)
 
     if st.session_state.get("_qr_mensajes"):
         st.markdown('<div class="scan-ultimos">Ultimos escaneos</div>', unsafe_allow_html=True)
