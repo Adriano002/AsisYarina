@@ -920,10 +920,19 @@ def escaner_qr_continuo(key="qr_scanner"):
             st.session_state["_ultimo_qr_scan"] = {"dni": dni, "ts": time.time()}
             _procesar_escaneo(dni)
 
-    # Puente Python -> JS: pitido diferenciado + cartel visual
+    # Puente Python -> JS: pitido/voz diferenciado + cartel visual
     fb = st.session_state.get("_qr_feedback_pendiente")
     if fb and (time.time() - fb.get("ts", 0)) < 5:
-        texto_js = fb["texto"].replace("\\", "\\\\").replace("'", "\\'").replace("\n", " ")[:60]
+        # Escapado robusto: backslash, comillas simples, comillas dobles, saltos de linea
+        texto_js = (
+            fb["texto"]
+            .replace("\\", "\\\\")
+            .replace("'", "\\'")
+            .replace('"', '\\"')
+            .replace("\n", " ")
+            .replace("\r", " ")
+        )[:60]
+        kind_js = str(fb["kind"]).replace("'", "").replace('"', "")
         st.components.v1.html(f"""
             <script>
             (function() {{
@@ -935,14 +944,14 @@ def escaner_qr_continuo(key="qr_scanner"):
                         for (const f of frames) {{
                             try {{
                                 const w = f.contentWindow;
-                                if (w && w.__qrFeedback) {{
-                                    w.__qrFeedback('{fb["kind"]}', '{texto_js}');
+                                if (w && typeof w.__qrFeedback === 'function') {{
+                                    w.__qrFeedback('{kind_js}', '{texto_js}');
                                     return;
                                 }}
                             }} catch(e) {{}}
                         }}
                     }} catch(e) {{}}
-                    if (tries < 40) setTimeout(buscar, 100);
+                    if (tries < 60) setTimeout(buscar, 100);
                 }};
                 buscar();
             }})();
