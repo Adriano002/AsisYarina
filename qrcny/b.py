@@ -1276,10 +1276,16 @@ def generar_pdf_tabla(df, titulo, subtitulo=None):
     if not df.empty:
         datos = [df.columns.tolist()] + df.astype(str).values.tolist()
         t = Table(datos, repeatRows=1)
-        t.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor(C_NARANJA)),
-                                ("TEXTCOLOR",(0,0),(-1,0),colors.whitesmoke),
-                                ("GRID",(0,0),(-1,-1),0.4,colors.grey),
-                                ("FONTSIZE",(0,0),(-1,-1),7)]))
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.white),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("LINEBELOW", (0, 0), (-1, 0), 1.5, colors.black),
+            ("LINEBELOW", (0, 1), (-1, -1), 0.3, colors.HexColor("#CCCCCC")),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#CCCCCC")),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ]))
         el.append(t)
     doc.build(el); buf.seek(0); return buf.getvalue()
 
@@ -1315,19 +1321,19 @@ def generar_pdf_tabla_ancha(df, titulo, subtitulo=None):
         suma = sum(anchos)
         anchos = [a * ancho_total / suma for a in anchos]
 
-        GRIS_HEADER = colors.HexColor("#2C3E50")
-        GRIS_FILA_ALT = colors.HexColor("#F5F5F5")
         GRIS_LINEA = colors.HexColor("#CCCCCC")
+        GRIS_FILA_ALT = colors.HexColor("#FAFAFA")
 
         t = Table(datos, colWidths=anchos, repeatRows=1)
         t.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), GRIS_HEADER),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.white),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
             ("FONTSIZE", (0, 0), (-1, 0), 12),
             ("FONTSIZE", (0, 1), (-1, -1), 11),
-            ("TEXTCOLOR", (0, 1), (-1, -1), colors.HexColor("#222222")),
-            ("GRID", (0, 0), (-1, -1), 0.5, GRIS_LINEA),
+            ("TEXTCOLOR", (0, 1), (-1, -1), colors.black),
+            ("LINEBELOW", (0, 0), (-1, 0), 1.5, colors.black),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#CCCCCC")),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ("ALIGN", (0, 0), (-1, -1), "LEFT"),
             ("LEFTPADDING", (0, 0), (-1, -1), 6),
@@ -1341,6 +1347,7 @@ def generar_pdf_tabla_ancha(df, titulo, subtitulo=None):
     doc.build(el)
     buf.seek(0)
     return buf.getvalue()
+  
 def generar_qr(dni):
     qr = qrcode.QRCode(version=1, box_size=10, border=4)
     qr.add_data(str(dni).strip()); qr.make(fit=True)
@@ -2190,24 +2197,23 @@ def _rep_mostrar_reporte(idsec, tipo, desde, hasta):
         if df.empty:
             st.info("Sin faltas en este rango.")
         else:
-            st.dataframe(df, width='stretch')
+            st.dataframe(df, width='stretch', hide_index=True)
             c1, c2 = st.columns(2)
             with c1:
                 st.download_button("Excel", df_a_xlsx(df), "Faltas_" + sec['grado'] + sec['seccion'] + ".xlsx", key="rep_dl_fal_x")
             with c2:
-                st.download_button("PDF", generar_pdf_tabla(df, "Conteo de faltas - " + sec['grado'] + " " + sec['seccion']), "Faltas_" + sec['grado'] + sec['seccion'] + ".pdf", "application/pdf", key="rep_dl_fal_p")
+                st.download_button("PDF", generar_pdf_tabla_ancha(df, "Conteo de faltas - " + sec['grado'] + " " + sec['seccion'] + " - Turno " + sec['turno']), "Faltas_" + sec['grado'] + sec['seccion'] + ".pdf", "application/pdf", key="rep_dl_fal_p")
     elif tipo == "mensual":
         df = cierre_mensual_calendario(hasta.month, hasta.year, [idsec])
         if df.empty:
             st.info("Sin datos para el mes.")
         else:
-            st.dataframe(df, width='stretch')
+            st.dataframe(df, width='stretch', hide_index=True)
             c1, c2 = st.columns(2)
             with c1:
                 st.download_button("Excel", df_a_xlsx(df), "Mensual_" + sec['grado'] + sec['seccion'] + ".xlsx", key="rep_dl_men_x")
             with c2:
-                st.download_button("PDF", generar_pdf_tabla(df, "Cierre mensual - " + sec['grado'] + " " + sec['seccion']), "Mensual_" + sec['grado'] + sec['seccion'] + ".pdf", "application/pdf", key="rep_dl_men_p")
-
+                st.download_button("PDF", generar_pdf_tabla_ancha(df, "Cierre mensual - " + sec['grado'] + " " + sec['seccion'] + " - Turno " + sec['turno']), "Mensual_" + sec['grado'] + sec['seccion'] + ".pdf", "application/pdf", key="rep_dl_men_p")
 def _mostrar_reporte_agrupado(df, sec, titulo):
     if df.empty:
         st.info("Sin registros en este rango.")
@@ -2288,14 +2294,14 @@ def _rep_general_por_grado_admin():
 
     for turno in turnos_presentes:
         df_turno = df[df["turno"] == turno]
-        html.append('<tr><th colspan="6" style="background:#2C3E50; color:white; padding:10px; text-align:left; font-size:14px; border:1px solid #333;">TURNO ' + turno.upper() + '</th></tr>')
-        html.append('<tr style="background:#f5f5f5;">'
-                    '<th style="padding:6px; border:1px solid #ccc; text-align:left;">Auxiliar</th>'
-                    '<th style="padding:6px; border:1px solid #ccc; text-align:left;">Grado</th>'
-                    '<th style="padding:6px; border:1px solid #ccc; text-align:left;">Seccion</th>'
-                    '<th style="padding:6px; border:1px solid #ccc; text-align:center;">Puntuales</th>'
-                    '<th style="padding:6px; border:1px solid #ccc; text-align:center;">Faltas</th>'
-                    '<th style="padding:6px; border:1px solid #ccc; text-align:center;">Total</th>'
+        html.append('<tr><th colspan="6" style="background:#FFFFFF; color:black; padding:10px; text-align:left; font-size:14px; border-bottom:2px solid black; border-top:1px solid #ccc;">TURNO ' + turno.upper() + '</th></tr>')
+        html.append('<tr style="background:#FFFFFF;">'
+                    '<th style="padding:6px; border:1px solid #666; text-align:left;">Auxiliar</th>'
+                    '<th style="padding:6px; border:1px solid #666; text-align:left;">Grado</th>'
+                    '<th style="padding:6px; border:1px solid #666; text-align:left;">Seccion</th>'
+                    '<th style="padding:6px; border:1px solid #666; text-align:center;">Puntuales</th>'
+                    '<th style="padding:6px; border:1px solid #666; text-align:center;">Faltas</th>'
+                    '<th style="padding:6px; border:1px solid #666; text-align:center;">Total</th>'
                     '</tr>')
         subtotal_turno = {"puntuales": 0, "faltas": 0, "total": 0}
         auxiliares = df_turno["auxiliar"].unique().tolist()
@@ -2305,38 +2311,38 @@ def _rep_general_por_grado_admin():
             for i, row in df_aux.iterrows():
                 html.append('<tr>')
                 if i == 0:
-                    html.append('<td rowspan="' + str(n) + '" style="padding:8px; border:1px solid #ccc; font-weight:700; background:#ECF0F1; vertical-align:top;">' + str(aux) + '</td>')
-                html.append('<td style="padding:6px; border:1px solid #ccc;">' + str(row['grado']) + '</td>'
-                            '<td style="padding:6px; border:1px solid #ccc;">' + str(row['seccion']) + '</td>'
-                            '<td style="padding:6px; border:1px solid #ccc; text-align:center;">' + str(int(row['puntuales'])) + '</td>'
-                            '<td style="padding:6px; border:1px solid #ccc; text-align:center;">' + str(int(row['faltas'])) + '</td>'
-                            '<td style="padding:6px; border:1px solid #ccc; text-align:center; font-weight:600;">' + str(int(row['total'])) + '</td>'
+                    html.append('<td rowspan="' + str(n) + '" style="padding:8px; border:1px solid #666; font-weight:700; background:#FFFFFF; vertical-align:top;">' + str(aux) + '</td>')
+                html.append('<td style="padding:6px; border:1px solid #666;">' + str(row['grado']) + '</td>'
+                            '<td style="padding:6px; border:1px solid #666;">' + str(row['seccion']) + '</td>'
+                            '<td style="padding:6px; border:1px solid #666; text-align:center;">' + str(int(row['puntuales'])) + '</td>'
+                            '<td style="padding:6px; border:1px solid #666; text-align:center;">' + str(int(row['faltas'])) + '</td>'
+                            '<td style="padding:6px; border:1px solid #666; text-align:center; font-weight:600;">' + str(int(row['total'])) + '</td>'
                             '</tr>')
             sub_aux = {"puntuales": int(df_aux["puntuales"].sum()), "faltas": int(df_aux["faltas"].sum()), "total": int(df_aux["total"].sum())}
             subtotal_turno["puntuales"] += sub_aux["puntuales"]
             subtotal_turno["faltas"] += sub_aux["faltas"]
             subtotal_turno["total"] += sub_aux["total"]
-            html.append('<tr style="background:#fafafa; font-style:italic;">'
-                        '<td colspan="3" style="padding:6px; border:1px solid #ccc; text-align:right;">Subtotal ' + str(aux) + '</td>'
-                        '<td style="padding:6px; border:1px solid #ccc; text-align:center;">' + str(sub_aux["puntuales"]) + '</td>'
-                        '<td style="padding:6px; border:1px solid #ccc; text-align:center;">' + str(sub_aux["faltas"]) + '</td>'
-                        '<td style="padding:6px; border:1px solid #ccc; text-align:center;">' + str(sub_aux["total"]) + '</td>'
+            html.append('<tr style="background:#F5F5F5; font-style:italic;">'
+                        '<td colspan="3" style="padding:6px; border:1px solid #666; text-align:right;">Subtotal ' + str(aux) + '</td>'
+                        '<td style="padding:6px; border:1px solid #666; text-align:center;">' + str(sub_aux["puntuales"]) + '</td>'
+                        '<td style="padding:6px; border:1px solid #666; text-align:center;">' + str(sub_aux["faltas"]) + '</td>'
+                        '<td style="padding:6px; border:1px solid #666; text-align:center;">' + str(sub_aux["total"]) + '</td>'
                         '</tr>')
-        html.append('<tr style="background:#D5DBDB; font-weight:700;">'
-                    '<td colspan="3" style="padding:8px; border:1px solid #ccc; text-align:right;">Subtotal ' + turno + '</td>'
-                    '<td style="padding:8px; border:1px solid #ccc; text-align:center;">' + str(subtotal_turno["puntuales"]) + '</td>'
-                    '<td style="padding:8px; border:1px solid #ccc; text-align:center;">' + str(subtotal_turno["faltas"]) + '</td>'
-                    '<td style="padding:8px; border:1px solid #ccc; text-align:center;">' + str(subtotal_turno["total"]) + '</td>'
+        html.append('<tr style="background:#E8E8E8; font-weight:700;">'
+                    '<td colspan="3" style="padding:8px; border:1px solid #666; text-align:right;">Subtotal ' + turno + '</td>'
+                    '<td style="padding:8px; border:1px solid #666; text-align:center;">' + str(subtotal_turno["puntuales"]) + '</td>'
+                    '<td style="padding:8px; border:1px solid #666; text-align:center;">' + str(subtotal_turno["faltas"]) + '</td>'
+                    '<td style="padding:8px; border:1px solid #666; text-align:center;">' + str(subtotal_turno["total"]) + '</td>'
                     '</tr>')
         totales_globales["puntuales"] += subtotal_turno["puntuales"]
         totales_globales["faltas"] += subtotal_turno["faltas"]
         totales_globales["total"] += subtotal_turno["total"]
 
-    html.append('<tr style="background:#2C3E50; color:white; font-weight:700; font-size:14px;">'
-                '<td colspan="3" style="padding:10px; border:1px solid #333; text-align:right;">TOTAL GENERAL</td>'
-                '<td style="padding:10px; border:1px solid #333; text-align:center;">' + str(totales_globales["puntuales"]) + '</td>'
-                '<td style="padding:10px; border:1px solid #333; text-align:center;">' + str(totales_globales["faltas"]) + '</td>'
-                '<td style="padding:10px; border:1px solid #333; text-align:center;">' + str(totales_globales["total"]) + '</td>'
+    html.append('<tr style="background:#FFFFFF; color:black; font-weight:700; font-size:14px; border-top:2px solid black; border-bottom:2px solid black;">'
+                '<td colspan="3" style="padding:10px; border:1px solid #666; text-align:right;">TOTAL GENERAL</td>'
+                '<td style="padding:10px; border:1px solid #666; text-align:center;">' + str(totales_globales["puntuales"]) + '</td>'
+                '<td style="padding:10px; border:1px solid #666; text-align:center;">' + str(totales_globales["faltas"]) + '</td>'
+                '<td style="padding:10px; border:1px solid #666; text-align:center;">' + str(totales_globales["total"]) + '</td>'
                 '</tr>')
     html.append('</table>')
     st.markdown("".join(html), unsafe_allow_html=True)
@@ -2353,7 +2359,6 @@ def _rep_general_por_grado_admin():
     with c2:
         st.download_button("PDF", generar_pdf_tabla_ancha(df_export, "Reporte general por auxiliar", str(desde) + " a " + str(hasta)),
                            "Reporte_general_" + str(desde) + "_" + str(hasta) + ".pdf", "application/pdf", width='stretch')
-
 def vista_reportes():
     st.title("Reportes y Consultas")
     usuario = st.session_state["user"]; rol = usuario["rol"]
