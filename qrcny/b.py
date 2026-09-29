@@ -905,7 +905,24 @@ def quitar_justificacion(ida, usuario):
 # ============================================================
 # ESCANEO QR - COMPONENTE PROPIO
 # ============================================================
+def _render_mensaje_qr(msg):
+    tipo = msg["tipo"]; mensaje = msg["mensaje"]
+    clase = {"PUNTUAL":"qr-puntual","TARDANZA":"qr-tardanza","REFORZAMIENTO":"qr-refuerzo",
+             "BLOQUEADO":"qr-bloqueado","ERROR":"qr-error"}.get(tipo, "qr-error")
 
+    if tipo == "TARDANZA":
+        acc = (msg.get("extra") or {}).get("accion")
+        if acc == ACC_DERIVADO:
+            mensaje += " -> Derivar a TOECE"; clase = "qr-derivado"
+        elif acc == ACC_RETENIDO:
+            mensaje += " -> Retener hasta apoderado"; clase = "qr-retenido"
+
+    st.markdown(
+        '<div class="qr-msg ' + clase + '"><div class="qr-texto">' +
+        mensaje + '</div></div>',
+        unsafe_allow_html=True
+    )
+  
 def _procesar_escaneo(dni):
     u = st.session_state.get("user")
     if not u: return
