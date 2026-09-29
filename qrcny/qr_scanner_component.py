@@ -1,15 +1,11 @@
 # qr_scanner_component.py
-# Componente de escaneo QR para Streamlit con 5 sonidos diferenciados.
-# Python dispara el sonido correspondiente via window.__qrFeedback(kind):
-#   "puntual"   -> campanita alegre
-#   "tardanza"  -> tono neutro
-#   "duplicado" -> buzz feo
-#   "error"     -> disonancia horrible
-#   "bloqueado" -> triple buzz grave tenebroso
+# Componente de escaneo QR para Streamlit.
+# Registra window.parent.__qrFeedback(kind) para que Python dispare
+# 4 sonidos distintos: puntual | tardanza | duplicado | error.
 import streamlit as st
 
 QR_SCANNER_COMPONENT = st.components.v2.component(
-    name="mi_qr_scanner_v9",
+    name="mi_qr_scanner_v17",
     isolate_styles=False,
     html="""
     <div id="qr-wrapper">
@@ -84,10 +80,9 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         const { setTriggerValue } = component;
         let scanner = null;
         let iniciado = false;
-        let ultimoPitidoTs = 0;
 
         // ============================================================
-        // MOTOR DE AUDIO (Web Audio API)
+        // MOTOR DE AUDIO
         // ============================================================
         let audioCtx = null;
         function getAudioCtx() {
@@ -125,38 +120,37 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         // 5 SONIDOS
         // ============================================================
 
-        // 1) PUNTUAL: campanita alegre (3 notas ascendentes + brillo)
+        // 1) PUNTUAL: DO -> MI -> SOL, subida alegre
         function sonidoPuntual() {
-            _tono(1047, 0.15, 'sine', 0.55, 0.00);   // DO6
-            _tono(1319, 0.15, 'sine', 0.50, 0.08);   // MI6
-            _tono(1568, 0.25, 'sine', 0.45, 0.16);   // SOL6
-            _tono(2093, 0.30, 'sine', 0.30, 0.20);   // DO7 (brillo)
+            _tono(523, 0.10, 'sine', 0.40, 0);
+            _tono(659, 0.10, 'sine', 0.40, 0.10);
+            _tono(784, 0.15, 'sine', 0.40, 0.20);
         }
 
         // 2) TARDANZA: nota neutra, plana
         function sonidoTardanza() {
-            _tono(440, 0.35, 'sine', 0.40, 0);       // LA4
+            _tono(440, 0.30, 'sine', 0.35, 0);
         }
 
-        // 3) DUPLICADO: buzz doble grave feo
+        // 3) DUPLICADO: buzz grave doble, fuerte
         function sonidoDuplicado() {
-            _tono(220, 0.18, 'square', 0.40, 0.00);
-            _tono(220, 0.18, 'square', 0.40, 0.22);
+            _tono(220, 0.18, 'square', 0.45, 0);
+            _tono(220, 0.18, 'square', 0.45, 0.22);
         }
 
-        // 4) ERROR: disonancia horrible ascendente
+        // 4) ERROR (DNI no existe): disonancia horrible ascendente
         function sonidoError() {
-            _tono(180, 0.15, 'sawtooth', 0.45, 0.00);
+            _tono(180, 0.15, 'sawtooth', 0.45, 0);
             _tono(250, 0.15, 'sawtooth', 0.45, 0.15);
             _tono(330, 0.15, 'sawtooth', 0.45, 0.30);
             _tono(440, 0.25, 'sawtooth', 0.45, 0.45);
         }
 
-        // 5) BLOQUEADO: triple buzz grave tenebroso
+        // 5) BLOQUEADO (por si acaso): triple buzz grave
         function sonidoBloqueado() {
-            _tono(160, 0.15, 'sawtooth', 0.45, 0.00);
+            _tono(160, 0.15, 'sawtooth', 0.45, 0);
             _tono(120, 0.15, 'sawtooth', 0.45, 0.18);
-            _tono(90,  0.35, 'sawtooth', 0.45, 0.36);
+            _tono(90, 0.30, 'sawtooth', 0.45, 0.36);
         }
 
         // ============================================================
@@ -166,19 +160,19 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             try {
                 getAudioCtx();
                 switch (kind) {
-                    case "puntual":    sonidoPuntual();    break;
-                    case "tardanza":   sonidoTardanza();   break;
-                    case "duplicado":  sonidoDuplicado();  break;
-                    case "bloqueado":  sonidoBloqueado();  break;
+                    case "puntual":     sonidoPuntual();     break;
+                    case "tardanza":    sonidoTardanza();    break;
+                    case "duplicado":   sonidoDuplicado();   break;
+                    case "bloqueado":   sonidoBloqueado();   break;
                     case "error":
-                    default:           sonidoError();      break;
+                    default:            sonidoError();       break;
                 }
             } catch (e) {
                 console.error('[QR] reproducir error:', e);
             }
         }
 
-        // Registrar en window propio Y en window.parent
+        // Registrar en window propio Y en window.parent (por si acaso)
         window.__qrFeedback = reproducir;
         try {
             window.parent.__qrFeedback = reproducir;
@@ -233,62 +227,58 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
 
             getAudioCtx();
 
-            scanner = new Html5QrcodeScanner(
-                "qr-reader",
-                {
-                    fps: 10,
-                    qrbox: { width: 250, height: 250 },
-                    aspectRatio: 1.0,
-                    rememberLastUsedCamera: true,
-                    supportedScanTypes: [Html5QrcodeScanType.SCAN_TYPE_CAMERA]
-                },
-                false
-            );
+            setTimeout(() => {
+                if (!iniciado) return;
 
-            const onScanSuccess = (texto) => {
+                scanner = new Html5QrcodeScanner(
+                    "qr-reader",
+                    {
+                        fps: 10,
+                        qrbox: { width: 250, height: 250 },
+                        aspectRatio: 1.0,
+                        rememberLastUsedCamera: true,
+                        videoConstraints: { facingMode: "environment" },
+                        supportedScanTypes: [Html5QrcodeScanType.SCAN_TYPE_CAMERA]
+                    },
+                    false
+                );
+
+                const onScanSuccess = (texto) => {
+                    try {
+                        const m = texto.match(/\\b(\\d{8})\\b/);
+                        if (!m) return;
+                        const dni = m[1];
+                        setStatus('QR: ' + dni);
+                        setTriggerValue("qr_dni", dni);
+                    } catch (e) {
+                        console.error('[QR] error en onScanSuccess:', e);
+                    }
+                };
+
+                const onScanError = () => {};
+
+                let resultado;
                 try {
-                    const m = texto.match(/\\b(\\d{8})\\b/);
-                    if (!m) return;
-                    const dni = m[1];
-                    setStatus('QR: ' + dni);
-                    // Enviamos el DNI a Python. Python decide el sonido.
-                    setTriggerValue("qr_dni", dni);
+                    resultado = scanner.render(onScanSuccess, onScanError);
                 } catch (e) {
-                    console.error('[QR] error en onScanSuccess:', e);
+                    const msg = (e && e.message) ? e.message : String(e);
+                    setError('Error al iniciar: ' + msg);
+                    iniciado = false;
+                    return;
                 }
-            };
 
-            const onScanError = () => {};
-
-            let resultado;
-            try {
-                resultado = scanner.render(onScanSuccess, onScanError);
-            } catch (e) {
-                const msg = (e && e.message) ? e.message : String(e);
-                setError('Error al iniciar: ' + msg);
-                iniciado = false;
-                return;
-            }
-
-            if (resultado && typeof resultado.then === 'function') {
-                resultado
-                    .then(() => setStatus('Camara activa.'))
-                    .catch((e) => {
-                        const msg = (e && e.message) ? e.message : String(e);
-                        if (msg.includes('NotAllowedError')) {
-                            setError('Permiso de camara denegado. Acepta el permiso o usa HTTPS.');
-                        } else if (msg.includes('NotFoundError')) {
-                            setError('No se encontro ninguna camara en este dispositivo.');
-                        } else if (msg.includes('NotReadableError')) {
-                            setError('La camara esta siendo usada por otra aplicacion.');
-                        } else {
+                if (resultado && typeof resultado.then === 'function') {
+                    resultado
+                        .then(() => setStatus('Camara activa.'))
+                        .catch((e) => {
+                            const msg = (e && e.message) ? e.message : String(e);
                             setError('Error camara: ' + msg);
-                        }
-                        iniciado = false;
-                    });
-            } else {
-                setStatus('Camara activa.');
-            }
+                            iniciado = false;
+                        });
+                } else {
+                    setStatus('Camara activa.');
+                }
+            }, 500);
         }
 
         // ============================================================
@@ -296,34 +286,34 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         // ============================================================
         window.addEventListener('beforeunload', destruirScanner);
 
-        if (window.__qrV9Listo && typeof Html5QrcodeScanner !== 'undefined') {
+        if (window.__qrV17Listo && typeof Html5QrcodeScanner !== 'undefined') {
             iniciarScanner();
             return;
         }
-        if (window.__qrV9Cargando) {
+        if (window.__qrV17Cargando) {
             let n = 0;
             const t = setInterval(() => {
                 n++;
                 if (typeof Html5QrcodeScanner !== 'undefined') {
                     clearInterval(t);
-                    window.__qrV9Listo = true;
-                    window.__qrV9Cargando = false;
+                    window.__qrV17Listo = true;
+                    window.__qrV17Cargando = false;
                     iniciarScanner();
                 } else if (n > 100) {
                     clearInterval(t);
-                    window.__qrV9Cargando = false;
+                    window.__qrV17Cargando = false;
                     setError('Timeout cargando libreria.');
                 }
             }, 100);
             return;
         }
-        window.__qrV9Cargando = true;
+        window.__qrV17Cargando = true;
         const s = document.createElement('script');
         s.src = 'https://unpkg.com/html5-qrcode';
         s.async = true;
         s.onload = () => {
-            window.__qrV9Listo = true;
-            window.__qrV9Cargando = false;
+            window.__qrV17Listo = true;
+            window.__qrV17Cargando = false;
             setTimeout(() => {
                 if (typeof Html5QrcodeScanner === 'undefined') {
                     setError('Libreria cargada pero sin Html5QrcodeScanner.');
@@ -333,7 +323,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             }, 50);
         };
         s.onerror = () => {
-            window.__qrV9Cargando = false;
+            window.__qrV17Cargando = false;
             setError('Error al cargar html5-qrcode del CDN.');
         };
         document.head.appendChild(s);
@@ -343,10 +333,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
 
 
 def qr_scanner(key="qr_scanner", on_scan=None):
-    """
-    Monta el componente escaner QR con 5 sonidos diferenciados.
-    El sonido lo dispara Python via window.__qrFeedback(kind).
-    """
     if on_scan is None:
         on_scan = lambda: None
     return QR_SCANNER_COMPONENT(
