@@ -928,8 +928,7 @@ def _procesar_escaneo(dni):
     if not u: return
     ok, tipo, msg, extra = registrar_entrada(dni, u, origen="qr")
 
-    # Actualizar cache local del escaneo para que el JS no repita sonido erroneo
-    # (el JS ya sono al instante; Python actualiza la lista por si hay mas escaneos)
+    # Actualizar cache local del escaneo
     st.session_state.setdefault("_qr_registrados_hoy", {})
     if ok and tipo in ("PUNTUAL", "TARDANZA", "REFORZAMIENTO"):
         st.session_state["_qr_registrados_hoy"][dni] = {
@@ -938,6 +937,13 @@ def _procesar_escaneo(dni):
         }
 
     st.session_state.setdefault("_qr_mensajes", [])
+
+    # Evitar duplicados exactos consecutivos (mismo dni + mismo mensaje)
+    if st.session_state["_qr_mensajes"]:
+        ult = st.session_state["_qr_mensajes"][0]
+        if ult.get("dni") == dni and ult.get("mensaje") == msg:
+            return  # ya esta el mismo mensaje arriba, no duplicar
+
     st.session_state["_qr_mensajes"].insert(0, {
         "dni": dni, "tipo": tipo, "mensaje": msg,
         "extra": extra, "ts": time.time()
@@ -990,8 +996,11 @@ def escaner_qr_continuo(key="qr_scanner"):
 
     ya_registrados, bloqueados = _construir_estado_para_scanner()
 
+    # mount_id cambia cuando queremos remontar el componente (mata el trigger viejo)
+    mount_id = st.session_state.get("_qr_mount_id", 0)
+
     result = qr_scanner(
-        key="qr_" + key,
+        key="qr_" + key + "_" + str(mount_id),
         on_scan=_on_scan,
         ya_registrados=ya_registrados,
         bloqueados=bloqueados,
@@ -999,10 +1008,21 @@ def escaner_qr_continuo(key="qr_scanner"):
 
     if result is not None and getattr(result, "qr_dni", None):
         dni = result.qr_dni
-        ult = st.session_state.get("_ultimo_qr_scan", {})
-        if not (ult.get("dni") == dni and (time.time() - ult.get("ts", 0)) < 1.5):
-            st.session_state["_ultimo_qr_scan"] = {"dni": dni, "ts": time.time()}
+
+        # Anti-rebote en Python: si ya procesamos este DNI en los ultimos 15s, ignorar
+        cache_py = st.session_state.setdefault("_qr_cache_py", {})
+        ahora = time.time()
+        # Limpiar entradas viejas
+        for k in list(cache_py.keys()):
+            if (ahora - cache_py[k]) > 15:
+                del cache_py[k]
+
+        if dni not in cache_py:
+            cache_py[dni] = ahora
             _procesar_escaneo(dni)
+            # Remontar el componente para matar el trigger viejo
+            st.session_state["_qr_mount_id"] = mount_id + 1
+            st.rerun()
 
     if st.session_state.get("_qr_mensajes"):
         st.markdown('<div class="scan-ultimos">Ultimos escaneos</div>', unsafe_allow_html=True)
