@@ -560,32 +560,70 @@ def _normalizar_grado(n):
 
 def validar_importacion(df, mapeo):
     errs = []; val = []; con = obtener_conexion(); vistos = {}
+
+    def _limpiar(v):
+        """Convierte cualquier valor a string limpio, quitando .0 de floats."""
+        if v is None:
+            return ""
+        if isinstance(v, float):
+            if pd.isna(v):
+                return ""
+            # Si es entero disfrazado de float (12345678.0 -> "12345678")
+            if v == int(v):
+                return str(int(v))
+            return str(v)
+        if isinstance(v, int):
+            return str(v)
+        s = str(v).strip()
+        # Por si viene como texto "12345678.0"
+        if s.endswith(".0") and s[:-2].isdigit():
+            s = s[:-2]
+        # Si pandas convirtio NaN en "nan"
+        if s.lower() == "nan":
+            return ""
+        return s
+
     for idx, fila in df.iterrows():
         nf = idx + 2
         try:
-            dni = str(fila[mapeo["dni"]]).strip()
-            nom = str(fila[mapeo["nombres"]]).strip()
-            ap = str(fila[mapeo["apellido_paterno"]]).strip()
-            am = str(fila[mapeo["apellido_materno"]]).strip() if mapeo.get("apellido_materno") else ""
-            gr = _normalizar_grado(str(fila[mapeo["grado"]]))
-            sec = str(fila[mapeo["seccion"]]).strip().upper()
-            tur = str(fila[mapeo["turno"]]).strip().lower()
-            an = str(fila[mapeo["apoderado_nombre"]]).strip() if mapeo.get("apoderado_nombre") else ""
-            at = str(fila[mapeo["apoderado_telefono"]]).strip() if mapeo.get("apoderado_telefono") else ""
-            if not dni: errs.append({"fila": nf, "motivo": "DNI vacio"}); continue
-            if not re.fullmatch(r"\d{8}", dni): errs.append({"fila": nf, "motivo": "DNI invalido '" + dni + "'"}); continue
-            if dni in vistos: errs.append({"fila": nf, "motivo": "DNI " + dni + " duplicado"}); continue
-            if not nom or not ap or not gr or not sec: errs.append({"fila": nf, "motivo": "Faltan campos"}); continue
+            dni = _limpiar(fila[mapeo["dni"]])
+            nom = _limpiar(fila[mapeo["nombres"]])
+            ap = _limpiar(fila[mapeo["apellido_paterno"]])
+            am = _limpiar(fila[mapeo["apellido_materno"]]) if mapeo.get("apellido_materno") else ""
+            gr = _normalizar_grado(_limpiar(fila[mapeo["grado"]]))
+            sec = _limpiar(fila[mapeo["seccion"]]).upper()
+            tur = _limpiar(fila[mapeo["turno"]]).lower()
+            an = _limpiar(fila[mapeo["apoderado_nombre"]]) if mapeo.get("apoderado_nombre") else ""
+            at = _limpiar(fila[mapeo["apoderado_telefono"]]) if mapeo.get("apoderado_telefono") else ""
+
+            if not dni:
+                errs.append({"fila": nf, "motivo": "DNI vacio"}); continue
+            if not re.fullmatch(r"\d{8}", dni):
+                errs.append({"fila": nf, "motivo": "DNI invalido '" + dni + "'"}); continue
+            if dni in vistos:
+                errs.append({"fila": nf, "motivo": "DNI " + dni + " duplicado"}); continue
+            if not nom or not ap or not gr or not sec:
+                errs.append({"fila": nf, "motivo": "Faltan campos"}); continue
             if not con.execute("SELECT id FROM grados WHERE nombre=?", (gr,)).fetchone():
                 errs.append({"fila": nf, "motivo": "Grado '" + gr + "' no existe"}); continue
-            if tur in ("mañana","manana","m","am","mñ"): tn = "Mañana"
-            elif tur in ("tarde","t","tm","pm"): tn = "Tarde"
-            else: errs.append({"fila": nf, "motivo": "Turno '" + tur + "'"}); continue
+
+            if tur in ("mañana", "manana", "m", "am", "mñ"):
+                tn = "Mañana"
+            elif tur in ("tarde", "t", "tm", "pm"):
+                tn = "Tarde"
+            else:
+                errs.append({"fila": nf, "motivo": "Turno '" + tur + "'"}); continue
+
             vistos[dni] = nf
-            val.append({"dni": dni, "nombres": nom, "apellido_paterno": ap, "apellido_materno": am,
-                        "grado": gr, "seccion": sec, "turno": tn, "apoderado_nombre": an, "apoderado_telefono": at})
+            val.append({
+                "dni": dni, "nombres": nom,
+                "apellido_paterno": ap, "apellido_materno": am,
+                "grado": gr, "seccion": sec, "turno": tn,
+                "apoderado_nombre": an, "apoderado_telefono": at
+            })
         except (KeyError, ValueError, TypeError) as e:
             errs.append({"fila": nf, "motivo": "Error: " + str(e)})
+
     return val, errs, {"total": len(df), "validas": len(val), "errores": len(errs)}
 
 def insertar_alumnos_validos(val):
@@ -852,36 +890,35 @@ def _procesar_escaneo(dni):
     if not u: return
     ok, tipo, msg, extra = registrar_entrada(dni, u, origen="qr")
 
-    # Clasificar feedback para el componente JS
+    # Decidir que sonido debe sonar
     if not ok and tipo == "ERROR":
         if "ya registro" in msg or "ya tiene" in msg:
-            feedback = "duplicado"
+            sonido = "duplicado"
+        elif "DNI no encontrado" in msg:
+            sonido = "error"     # DNI no existe
         else:
-            feedback = "error"
+            sonido = "error"
     elif tipo == "BLOQUEADO":
-        feedback = "bloqueado"
+        sonido = "bloqueado"
+    elif ok and tipo == "TARDANZA":
+        sonido = "tardanza"
     elif ok:
-        if tipo == "TARDANZA":
-            feedback = "tardanza"
-        else:  # PUNTUAL o REFORZAMIENTO
-            feedback = "nuevo"
+        sonido = "puntual"
     else:
-        feedback = "error"
+        sonido = "error"
 
     st.session_state.setdefault("_qr_mensajes", [])
     st.session_state["_qr_mensajes"].insert(0, {
         "dni": dni, "tipo": tipo, "mensaje": msg,
-        "extra": extra, "ts": time.time(), "feedback": feedback
+        "extra": extra, "ts": time.time()
     })
     st.session_state["_qr_mensajes"] = st.session_state["_qr_mensajes"][:10]
 
-    # Guardar feedback pendiente para disparar JS en el proximo render
-    st.session_state["_qr_feedback_pendiente"] = {
-        "kind": feedback,
-        "texto": msg[:60],
+    # Guardar sonido pendiente para disparar en el proximo render
+    st.session_state["_qr_sonido_pendiente"] = {
+        "kind": sonido,
         "ts": time.time(),
     }
-
 def _render_mensaje_qr(msg):
     tipo = msg["tipo"]; mensaje = msg["mensaje"]
     clase = {"PUNTUAL":"qr-puntual","TARDANZA":"qr-tardanza","REFORZAMIENTO":"qr-refuerzo",
@@ -910,20 +947,7 @@ def escaner_qr_continuo(key="qr_scanner"):
         pass
 
     mount_id = st.session_state.get("_qr_mount_id", 0)
-
-    # Tomar feedback pendiente (si hay) para pasarlo al componente
-    fb = st.session_state.get("_qr_feedback_pendiente")
-    feedback_kind = fb["kind"] if fb else ""
-    feedback_texto = (fb["texto"] or "")[:60] if fb else ""
-    feedback_ts = fb.get("ts", 0) if fb else 0
-
-    result = qr_scanner(
-        key="qr_" + key + "_" + str(mount_id),
-        on_scan=_on_scan,
-        feedback_kind=feedback_kind,
-        feedback_texto=feedback_texto,
-        feedback_ts=feedback_ts,
-    )
+    result = qr_scanner(key="qr_" + key + "_" + str(mount_id), on_scan=_on_scan)
 
     if result is not None and getattr(result, "qr_dni", None):
         dni = result.qr_dni
@@ -932,15 +956,48 @@ def escaner_qr_continuo(key="qr_scanner"):
             st.session_state["_ultimo_qr_scan"] = {"dni": dni, "ts": time.time()}
             _procesar_escaneo(dni)
 
-    # Consumir el feedback ya enviado al componente
-    if fb:
-        st.session_state.pop("_qr_feedback_pendiente", None)
+    # Disparar sonido pendiente
+    sp = st.session_state.get("_qr_sonido_pendiente")
+    if sp and (time.time() - sp.get("ts", 0)) < 5:
+        kind_js = sp["kind"]
+        st.components.v1.html(f"""
+            <script>
+            (function() {{
+                let tries = 0;
+                const disparar = () => {{
+                    tries++;
+                    try {{
+                        // 1) intentar en el propio iframe padre
+                        if (window.parent && typeof window.parent.__qrFeedback === 'function') {{
+                            window.parent.__qrFeedback('{kind_js}');
+                            return;
+                        }}
+                    }} catch(e) {{}}
+                    try {{
+                        // 2) intentar en otros iframes hermanos
+                        const frames = document.querySelectorAll('iframe');
+                        for (const f of frames) {{
+                            try {{
+                                const w = f.contentWindow;
+                                if (w && typeof w.__qrFeedback === 'function') {{
+                                    w.__qrFeedback('{kind_js}');
+                                    return;
+                                }}
+                            }} catch(e) {{}}
+                        }}
+                    }} catch(e) {{}}
+                    if (tries < 60) setTimeout(disparar, 100);
+                }};
+                disparar();
+            }})();
+            </script>
+        """, height=0)
+        st.session_state.pop("_qr_sonido_pendiente", None)
 
     if st.session_state.get("_qr_mensajes"):
         st.markdown('<div class="scan-ultimos">Ultimos escaneos</div>', unsafe_allow_html=True)
         for msg in st.session_state["_qr_mensajes"][:5]:
             _render_mensaje_qr(msg)
-
 # reportes base
 def metricas_dia(fecha, pid=None):
     con = obtener_conexion()
@@ -989,14 +1046,14 @@ def reporte_conteo_faltas(inicio, fin, ids_sec, pid=None):
     q += " GROUP BY a.id ORDER BY faltas_injust DESC, total_faltas DESC"
     return pd.read_sql(q, con, params=p)
 
-def cierre_mensual_calendario(mes, anio, ids_sec, pid=None):
-    ult = monthrange(anio, mes)[1]
-    ini = date(anio, mes, 1)
-    fin = date(anio, mes, ult)
+def cierre_mensual_calendario(mes, año, ids_sec, pid=None):
+    ult = monthrange(año, mes)[1]
+    ini = date(año, mes, 1)
+    fin = date(año, mes, ult)
     con = obtener_conexion()
     dias = []
     for d in range(1, ult + 1):
-        f = date(anio, mes, d)
+        f = date(año, mes, d)
         if f.weekday() >= 5:
             esp = con.execute("SELECT id FROM dias_especiales WHERE fecha=? AND activo=1 AND tipo='evento'", (f.strftime("%Y-%m-%d"),)).fetchone()
             if not esp:
@@ -1014,7 +1071,7 @@ def cierre_mensual_calendario(mes, anio, ids_sec, pid=None):
     )
     if df_al.empty:
         return pd.DataFrame()
-    abre = {"Puntual": "PUN", "Falta": "FAL", "Tardanza": "TAR", "Permiso": "PER"}
+
     asis = {}
     q_asis = ("SELECT alumno_id, fecha, estado, justificada FROM asistencias "
               "WHERE fecha BETWEEN ? AND ? AND tipo='clases'")
@@ -1025,34 +1082,31 @@ def cierre_mensual_calendario(mes, anio, ids_sec, pid=None):
     for r in con.execute(q_asis, p_asis).fetchall():
         key = (r["alumno_id"], r["fecha"])
         est = r["estado"]
-        if est == "Falta" and r["justificada"]:
-            est = "JUS"
+        # Solo P o F. Todo lo que no sea Falta se cuenta como P.
+        if est == "Falta":
+            asis[key] = "F"
         else:
-            est = abre.get(est, est[:3].upper())
-        asis[key] = est
+            asis[key] = "P"
+
     filas = []
     for _, al in df_al.iterrows():
-        fila = {"Apellidos": al["apellidos"], "Nombres": al["nombres"],
-                "Grado": al["grado"], "Seccion": al["seccion"], "Turno": al["turno"]}
-        tp = tf = tt = tj = 0
+        fila = {"Apellidos": al["apellidos"], "Nombres": al["nombres"]}
+        tp = tf = 0
         for d in dias:
             f_str = d.strftime("%Y-%m-%d")
             etiqueta = ["Lun","Mar","Mie","Jue","Vie","Sab","Dom"][d.weekday()] + " " + str(d.day).zfill(2)
             est = asis.get((al["alumno_id"], f_str), "-")
             fila[etiqueta] = est
-            if est == "PUN": tp += 1
-            elif est == "FAL": tf += 1
-            elif est == "TAR": tt += 1
-            elif est == "JUS": tj += 1
-        fila["Total PUN"] = tp
-        fila["Total FAL"] = tf
-        fila["Total TAR"] = tt
-        fila["Total JUS"] = tj
+            if est == "P": tp += 1
+            elif est == "F": tf += 1
+        fila["Total P"] = tp
+        fila["Total F"] = tf
         filas.append(fila)
+
     df = pd.DataFrame(filas)
-    cols_base = ["Apellidos", "Nombres", "Grado", "Seccion", "Turno"]
+    cols_base = ["Apellidos", "Nombres"]
     cols_dias = [c for c in df.columns if c not in cols_base and not c.startswith("Total")]
-    cols_tot = ["Total PUN", "Total FAL", "Total TAR", "Total JUS"]
+    cols_tot = ["Total P", "Total F"]
     return df[cols_base + cols_dias + cols_tot]
 
 def casos_toece(pid=None):
@@ -1093,12 +1147,15 @@ def obtener_auditoria(limite=500):
 def reporte_general_por_seccion(desde, hasta, pid=None):
     con = obtener_conexion()
     q = """
-    SELECT g.nombre AS grado, s.nombre AS seccion, s.id AS seccion_id, t.nombre AS turno,
+    SELECT t.nombre AS turno, s.id AS seccion_id, g.nombre AS grado, s.nombre AS seccion,
+    COALESCE(u.nombres, '(Sin auxiliar)') AS auxiliar,
     SUM(CASE WHEN ast.estado='Puntual' AND ast.tipo='clases' THEN 1 ELSE 0 END) AS puntuales,
     SUM(CASE WHEN ast.estado='Falta' AND ast.tipo='clases' THEN 1 ELSE 0 END) AS faltas
     FROM secciones s
     JOIN grados g ON s.grado_id=g.id
     JOIN turnos t ON s.turno_id=t.id
+    LEFT JOIN auxiliar_secciones ause ON ause.seccion_id = s.id
+    LEFT JOIN usuarios u ON u.id = ause.usuario_id AND u.rol='Auxiliar' AND u.activo=1
     LEFT JOIN asistencias ast ON ast.alumno_id IN (SELECT id FROM alumnos WHERE seccion_id=s.id)
         AND ast.fecha BETWEEN ? AND ?
     """
@@ -1106,24 +1163,17 @@ def reporte_general_por_seccion(desde, hasta, pid=None):
     if pid is not None:
         q += " AND ast.periodo_id=?"
         p.append(pid)
-    q += " GROUP BY s.id ORDER BY t.nombre, g.nombre, s.nombre"
+    q += """
+    GROUP BY t.nombre, t.id, s.id, g.nombre, s.nombre, auxiliar
+    ORDER BY
+        CASE t.nombre WHEN 'Mañana' THEN 1 WHEN 'Tarde' THEN 2 ELSE 3 END,
+        auxiliar, g.nombre, s.nombre
+    """
     df = pd.read_sql(q, con, params=p)
-    aux_por_seccion = {}
-    for _, r in df.iterrows():
-        sid = r["seccion_id"]
-        aux = con.execute("""
-            SELECT u.nombres
-            FROM usuarios u
-            JOIN auxiliar_secciones au ON au.usuario_id=u.id
-            WHERE au.seccion_id=? AND u.rol='Auxiliar' AND u.activo=1
-            LIMIT 1
-        """, (sid,)).fetchone()
-        if aux:
-            aux_por_seccion[sid] = aux["nombres"]
-        else:
-            aux_por_seccion[sid] = "(sin auxiliar asignado)"
-    df["auxiliar"] = df["seccion_id"].map(aux_por_seccion)
-    return df[["turno", "grado", "seccion", "puntuales", "faltas", "auxiliar"]]
+    if df.empty:
+        return df
+    df["total"] = df["puntuales"] + df["faltas"]
+    return df[["turno", "auxiliar", "grado", "seccion", "puntuales", "faltas", "total"]]
 
 # perfil
 def perfil_alumno_datos(idal):
@@ -1178,7 +1228,7 @@ def reporte_detallado_por_mes(pid):
         cur = date(cur.year+1, 1, 1) if cur.month == 12 else date(cur.year, cur.month+1, 1)
     return res
 
-def cerrar_anio_escolar(usuario, pid, nuevo_nombre, fi, ff):
+def cerrar_año_escolar(usuario, pid, nuevo_nombre, fi, ff):
     con = obtener_conexion()
     p = con.execute("SELECT * FROM periodos WHERE id=?", (pid,)).fetchone()
     if not p: return False, "Periodo no encontrado."
@@ -1199,7 +1249,7 @@ def cerrar_anio_escolar(usuario, pid, nuevo_nombre, fi, ff):
             con.commit()
         listar_periodos.clear()
     except sqlite3.Error as e:
-        con.rollback(); log.error("cerrar anio: %s", e); return False, "Error al cerrar el anio."
+        con.rollback(); log.error("cerrar año: %s", e); return False, "Error al cerrar el año."
     auditar(usuario["usuario"], "Cerro periodo " + p["nombre"], tb="periodos", rid=pid)
     return True, "Periodo '" + p["nombre"] + "' cerrado. Nuevo: '" + nuevo_nombre + "'."
 
@@ -1223,13 +1273,88 @@ def generar_pdf_tabla(df, titulo, subtitulo=None):
     if not df.empty:
         datos = [df.columns.tolist()] + df.astype(str).values.tolist()
         t = Table(datos, repeatRows=1)
-        t.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor(C_NARANJA)),
-                                ("TEXTCOLOR",(0,0),(-1,0),colors.whitesmoke),
-                                ("GRID",(0,0),(-1,-1),0.4,colors.grey),
-                                ("FONTSIZE",(0,0),(-1,-1),7)]))
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.white),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("LINEBELOW", (0, 0), (-1, 0), 1.5, colors.black),
+            ("LINEBELOW", (0, 1), (-1, -1), 0.3, colors.HexColor("#CCCCCC")),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#CCCCCC")),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ]))
         el.append(t)
     doc.build(el); buf.seek(0); return buf.getvalue()
 
+def generar_pdf_tabla_ancha(df, titulo, subtitulo=None, fuente_chica=False):
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=(A4[1], A4[0]),
+        rightMargin=15, leftMargin=15,
+        topMargin=20, bottomMargin=20
+    )
+    est = getSampleStyleSheet()
+    el = [Paragraph("<b>" + titulo + "</b>", est["Heading1"])]
+    if subtitulo:
+        el.append(Paragraph(subtitulo, est["Normal"]))
+    el.append(Paragraph("Generado: " + ahora().strftime("%Y-%m-%d %H:%M"), est["Normal"]))
+    el.append(Spacer(1, 12))
+
+    if not df.empty:
+        datos = [df.columns.tolist()] + df.astype(str).values.tolist()
+        anchos = []
+        for col in df.columns:
+            col_low = str(col).lower()
+            if any(k in col_low for k in ["auxiliar", "apellido", "nombres", "alumno", "observacion"]):
+                anchos.append(3.5)
+            elif any(k in col_low for k in ["grado", "seccion", "turno", "tipo", "estado"]):
+                anchos.append(1.5)
+            elif any(k in col_low for k in ["fecha", "hora"]):
+                anchos.append(1.8)
+            else:
+                anchos.append(1.0)
+        ancho_total = A4[1] - 30
+        suma = sum(anchos)
+        anchos = [a * ancho_total / suma for a in anchos]
+
+        GRIS_LINEA = colors.HexColor("#CCCCCC")
+        GRIS_FILA_ALT = colors.HexColor("#FAFAFA")
+
+        # Fuente segun el reporte
+        if fuente_chica:
+            fuente_cab = 6
+            fuente_fila = 6
+            padding = 3
+        else:
+            fuente_cab = 11
+            fuente_fila = 10
+            padding = 5
+
+        t = Table(datos, colWidths=anchos, repeatRows=1)
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.white),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), fuente_cab),
+            ("FONTSIZE", (0, 1), (-1, -1), fuente_fila),
+            ("TEXTCOLOR", (0, 1), (-1, -1), colors.black),
+            ("LINEBELOW", (0, 0), (-1, 0), 1.5, colors.black),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#CCCCCC")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+            ("LEFTPADDING", (0, 0), (-1, -1), padding),
+            ("RIGHTPADDING", (0, 0), (-1, -1), padding),
+            ("TOPPADDING", (0, 0), (-1, -1), padding),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), padding),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, GRIS_FILA_ALT]),
+        ]))
+        el.append(t)
+
+    doc.build(el)
+    buf.seek(0)
+    return buf.getvalue()
+  
 def generar_qr(dni):
     qr = qrcode.QRCode(version=1, box_size=10, border=4)
     qr.add_data(str(dni).strip()); qr.make(fit=True)
@@ -2079,24 +2204,23 @@ def _rep_mostrar_reporte(idsec, tipo, desde, hasta):
         if df.empty:
             st.info("Sin faltas en este rango.")
         else:
-            st.dataframe(df, width='stretch')
+            st.dataframe(df, width='stretch', hide_index=True)
             c1, c2 = st.columns(2)
             with c1:
                 st.download_button("Excel", df_a_xlsx(df), "Faltas_" + sec['grado'] + sec['seccion'] + ".xlsx", key="rep_dl_fal_x")
             with c2:
-                st.download_button("PDF", generar_pdf_tabla(df, "Conteo de faltas - " + sec['grado'] + " " + sec['seccion']), "Faltas_" + sec['grado'] + sec['seccion'] + ".pdf", "application/pdf", key="rep_dl_fal_p")
+                st.download_button("PDF", generar_pdf_tabla_ancha(df, "Conteo de faltas - " + sec['grado'] + " " + sec['seccion'] + " - Turno " + sec['turno']), "Faltas_" + sec['grado'] + sec['seccion'] + ".pdf", "application/pdf", key="rep_dl_fal_p")
     elif tipo == "mensual":
         df = cierre_mensual_calendario(hasta.month, hasta.year, [idsec])
         if df.empty:
             st.info("Sin datos para el mes.")
         else:
-            st.dataframe(df, width='stretch')
+            st.dataframe(df, width='stretch', hide_index=True)
             c1, c2 = st.columns(2)
             with c1:
                 st.download_button("Excel", df_a_xlsx(df), "Mensual_" + sec['grado'] + sec['seccion'] + ".xlsx", key="rep_dl_men_x")
             with c2:
-                st.download_button("PDF", generar_pdf_tabla(df, "Cierre mensual - " + sec['grado'] + " " + sec['seccion']), "Mensual_" + sec['grado'] + sec['seccion'] + ".pdf", "application/pdf", key="rep_dl_men_p")
-
+                st.download_button("PDF", generar_pdf_tabla_ancha(df, "Cierre mensual - " + sec['grado'] + " " + sec['seccion'] + " - Turno " + sec['turno'], fuente_chica=True), "Mensual_" + sec['grado'] + sec['seccion'] + ".pdf", "application/pdf", key="rep_dl_men_p")
 def _mostrar_reporte_agrupado(df, sec, titulo):
     if df.empty:
         st.info("Sin registros en este rango.")
@@ -2129,8 +2253,24 @@ def _rep_descarga_directa(idsec):
     st.rerun()
 
 def _rep_general_por_grado_admin():
-    st.subheader("Reporte general por seccion")
-    st.caption("Puntuales, faltas y auxiliar asignado por cada seccion.")
+    st.subheader("Reporte general por auxiliar")
+    st.caption("Puntuales, faltas y total agrupados por turno y auxiliar.")
+
+    # Bloqueo: no se puede reportar si hay ventana activa
+    ha = hora_corta()
+    ventanas_abiertas = []
+    for t in listar_turnos():
+        for v in listar_ventanas(t["id"]):
+            if v["hora_apertura"] <= ha <= v["hora_cierre"]:
+                ventanas_abiertas.append(t["nombre"] + " - " + v["nombre"] + " (cierra " + v["hora_cierre"] + ")")
+
+    if ventanas_abiertas:
+        st.warning("**No se puede generar el reporte todavia.** Hay ventanas de asistencia aun abiertas. Espera a que cierren para que los datos esten completos.")
+        st.markdown("**Ventanas abiertas ahora mismo:**")
+        for v in ventanas_abiertas:
+            st.markdown("- " + v)
+        return
+
     c1, c2 = st.columns(2)
     with c1: desde = st.date_input("Desde", ahora().date() - timedelta(days=30), key="repgen_desde")
     with c2: hasta = st.date_input("Hasta", ahora().date(), key="repgen_hasta")
@@ -2153,14 +2293,79 @@ def _rep_general_por_grado_admin():
         st.info("Sin datos en ese rango.")
         return
     st.markdown("---")
-    st.dataframe(df, width='stretch')
+
+    totales_globales = {"puntuales": 0, "faltas": 0, "total": 0}
+    turnos = ["Mañana", "Tarde"]
+    turnos_presentes = [t for t in turnos if t in df["turno"].unique().tolist()]
+    html = ['<table style="width:100%; border-collapse: collapse; font-size: 13px;">']
+
+    for turno in turnos_presentes:
+        df_turno = df[df["turno"] == turno]
+        html.append('<tr><th colspan="6" style="background:#FFFFFF; color:black; padding:10px; text-align:left; font-size:14px; border-bottom:2px solid black; border-top:1px solid #ccc;">TURNO ' + turno.upper() + '</th></tr>')
+        html.append('<tr style="background:#FFFFFF;">'
+                    '<th style="padding:6px; border:1px solid #666; text-align:left;">Auxiliar</th>'
+                    '<th style="padding:6px; border:1px solid #666; text-align:left;">Grado</th>'
+                    '<th style="padding:6px; border:1px solid #666; text-align:left;">Seccion</th>'
+                    '<th style="padding:6px; border:1px solid #666; text-align:center;">Puntuales</th>'
+                    '<th style="padding:6px; border:1px solid #666; text-align:center;">Faltas</th>'
+                    '<th style="padding:6px; border:1px solid #666; text-align:center;">Total</th>'
+                    '</tr>')
+        subtotal_turno = {"puntuales": 0, "faltas": 0, "total": 0}
+        auxiliares = df_turno["auxiliar"].unique().tolist()
+        for aux in auxiliares:
+            df_aux = df_turno[df_turno["auxiliar"] == aux].reset_index(drop=True)
+            n = len(df_aux)
+            for i, row in df_aux.iterrows():
+                html.append('<tr>')
+                if i == 0:
+                    html.append('<td rowspan="' + str(n) + '" style="padding:8px; border:1px solid #666; font-weight:700; background:#FFFFFF; vertical-align:top;">' + str(aux) + '</td>')
+                html.append('<td style="padding:6px; border:1px solid #666;">' + str(row['grado']) + '</td>'
+                            '<td style="padding:6px; border:1px solid #666;">' + str(row['seccion']) + '</td>'
+                            '<td style="padding:6px; border:1px solid #666; text-align:center;">' + str(int(row['puntuales'])) + '</td>'
+                            '<td style="padding:6px; border:1px solid #666; text-align:center;">' + str(int(row['faltas'])) + '</td>'
+                            '<td style="padding:6px; border:1px solid #666; text-align:center; font-weight:600;">' + str(int(row['total'])) + '</td>'
+                            '</tr>')
+            sub_aux = {"puntuales": int(df_aux["puntuales"].sum()), "faltas": int(df_aux["faltas"].sum()), "total": int(df_aux["total"].sum())}
+            subtotal_turno["puntuales"] += sub_aux["puntuales"]
+            subtotal_turno["faltas"] += sub_aux["faltas"]
+            subtotal_turno["total"] += sub_aux["total"]
+            html.append('<tr style="background:#F5F5F5; font-style:italic;">'
+                        '<td colspan="3" style="padding:6px; border:1px solid #666; text-align:right;">Subtotal ' + str(aux) + '</td>'
+                        '<td style="padding:6px; border:1px solid #666; text-align:center;">' + str(sub_aux["puntuales"]) + '</td>'
+                        '<td style="padding:6px; border:1px solid #666; text-align:center;">' + str(sub_aux["faltas"]) + '</td>'
+                        '<td style="padding:6px; border:1px solid #666; text-align:center;">' + str(sub_aux["total"]) + '</td>'
+                        '</tr>')
+        html.append('<tr style="background:#E8E8E8; font-weight:700;">'
+                    '<td colspan="3" style="padding:8px; border:1px solid #666; text-align:right;">Subtotal ' + turno + '</td>'
+                    '<td style="padding:8px; border:1px solid #666; text-align:center;">' + str(subtotal_turno["puntuales"]) + '</td>'
+                    '<td style="padding:8px; border:1px solid #666; text-align:center;">' + str(subtotal_turno["faltas"]) + '</td>'
+                    '<td style="padding:8px; border:1px solid #666; text-align:center;">' + str(subtotal_turno["total"]) + '</td>'
+                    '</tr>')
+        totales_globales["puntuales"] += subtotal_turno["puntuales"]
+        totales_globales["faltas"] += subtotal_turno["faltas"]
+        totales_globales["total"] += subtotal_turno["total"]
+
+    html.append('<tr style="background:#FFFFFF; color:black; font-weight:700; font-size:14px; border-top:2px solid black; border-bottom:2px solid black;">'
+                '<td colspan="3" style="padding:10px; border:1px solid #666; text-align:right;">TOTAL GENERAL</td>'
+                '<td style="padding:10px; border:1px solid #666; text-align:center;">' + str(totales_globales["puntuales"]) + '</td>'
+                '<td style="padding:10px; border:1px solid #666; text-align:center;">' + str(totales_globales["faltas"]) + '</td>'
+                '<td style="padding:10px; border:1px solid #666; text-align:center;">' + str(totales_globales["total"]) + '</td>'
+                '</tr>')
+    html.append('</table>')
+    st.markdown("".join(html), unsafe_allow_html=True)
+
+    st.markdown("---")
     st.markdown("### Descargar")
+    df_export = df.rename(columns={"turno": "Turno", "auxiliar": "Auxiliar", "grado": "Grado",
+                                    "seccion": "Seccion", "puntuales": "Puntuales",
+                                    "faltas": "Faltas", "total": "Total"})
     c1, c2 = st.columns(2)
     with c1:
-        st.download_button("Excel", df_a_xlsx(df, "General por seccion"), "Reporte_general_" + str(desde) + "_" + str(hasta) + ".xlsx", width='stretch')
+        st.download_button("Excel", df_a_xlsx(df_export, "General por auxiliar"),
+                           "Reporte_general_" + str(desde) + "_" + str(hasta) + ".xlsx", width='stretch')
     with c2:
-        st.download_button("PDF", generar_pdf_tabla(df, "Reporte general por seccion", str(desde) + " a " + str(hasta)), "Reporte_general_" + str(desde) + "_" + str(hasta) + ".pdf", "application/pdf", width='stretch')
-
+        st.download_button("PDF", generar_pdf_tabla_ancha(df_export, "Reporte general por auxiliar", str(desde) + " a " + str(hasta)),
+                           "Reporte_general_" + str(desde) + "_" + str(hasta) + ".pdf", "application/pdf", width='stretch')
 def vista_reportes():
     st.title("Reportes y Consultas")
     usuario = st.session_state["user"]; rol = usuario["rol"]
@@ -2179,8 +2384,12 @@ def vista_reportes():
         return
 
     if rol == "Admin":
-        modo = st.radio("Modo", ["Por seccion (normal)", "General por seccion (Admin)"], key="rep_modo_admin", horizontal=True, label_visibility="collapsed")
-        if modo == "General por seccion (Admin)":
+        modo = st.radio(
+            "Modo",
+            ["Por seccion (normal)", "General por auxiliar (Admin)"],
+            key="rep_modo_admin", horizontal=True, label_visibility="collapsed"
+        )
+        if modo == "General por auxiliar (Admin)":
             _rep_general_por_grado_admin()
             return
 
@@ -2812,7 +3021,7 @@ def _frag_importar_excel():
 def vista_auditoria():
     st.title("Auditoria y Periodos")
     usuario = st.session_state["user"]
-    tabs = st.tabs(["Registros", "Periodos", "Cierre de anio"])
+    tabs = st.tabs(["Registros", "Periodos", "Cierre de año"])
     with tabs[0]:
         df = obtener_auditoria(500)
         st.write(str(len(df)) + " registros")
@@ -2864,7 +3073,7 @@ def vista_auditoria():
                 if ok: st.toast(msg); st.rerun()
                 else: st.error(msg)
     with tabs[2]:
-        st.subheader("Cierre de anio escolar")
+        st.subheader("Cierre de año escolar")
         st.warning("Al cerrar el periodo se desactivan TODOS los alumnos.")
         p = obtener_periodo_activo()
         if not p:
@@ -2888,21 +3097,21 @@ def vista_auditoria():
         st.markdown("Paso 2: Cerrar periodo (requiere contrasena)")
         desc = st.session_state.get("_reporte_descargado", False)
         if not desc: st.info("Debes descargar el reporte anual antes.")
-        with st.form("cerrar_anio"):
+        with st.form("cerrar_año"):
             c1, c2, c3 = st.columns(3)
             with c1: nn = st.text_input("Nombre nuevo periodo", value=str(ahora().year + 1))
             with c2: fi = st.date_input("Inicio nuevo", date(ahora().year + 1, 3, 1))
             with c3: ff = st.date_input("Fin nuevo", date(ahora().year + 1, 12, 31))
             pwd = st.text_input("Contrasena de Admin o TOECE", type="password")
             conf = st.text_input("Escribe CERRAR para confirmar")
-            sub = st.form_submit_button("Cerrar anio escolar", type="primary")
+            sub = st.form_submit_button("Cerrar año escolar", type="primary")
         if sub:
             if not desc: st.error("Primero debes descargar el reporte anual.")
             elif conf.strip() != "CERRAR": st.error("Debes escribir exactamente CERRAR.")
             elif not pwd: st.error("Ingresa la contrasena.")
             elif not verificar_password_critica(pwd): st.error("Contrasena incorrecta.")
             else:
-                ok, msg = cerrar_anio_escolar(usuario, p["id"], nn, fi.strftime("%Y-%m-%d"), ff.strftime("%Y-%m-%d"))
+                ok, msg = cerrar_año_escolar(usuario, p["id"], nn, fi.strftime("%Y-%m-%d"), ff.strftime("%Y-%m-%d"))
                 if ok:
                     st.session_state.pop("_reporte_descargado", None); st.success(msg); st.rerun()
                 else: st.error(msg)
