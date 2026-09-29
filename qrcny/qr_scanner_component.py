@@ -1,12 +1,11 @@
 # qr_scanner_component.py
 # Componente de escaneo QR para Streamlit.
-# Expone window.__qrFeedback(kind, texto) para que app.py le indique
-# qué sonido/voz reproducir: 'nuevo' | 'tardanza' | 'duplicado' | 'bloqueado' | 'error'
-# Todos los avisos usan voz robótica (Web Speech API) + pitido sintetizado.
+# Registra window.parent.__qrFeedback(kind) para que Python dispare
+# 4 sonidos distintos: puntual | tardanza | duplicado | error.
 import streamlit as st
 
 QR_SCANNER_COMPONENT = st.components.v2.component(
-    name="mi_qr_scanner_v12",
+    name="mi_qr_scanner_v17",
     isolate_styles=False,
     html="""
     <div id="qr-wrapper">
@@ -81,10 +80,9 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         const { setTriggerValue } = component;
         let scanner = null;
         let iniciado = false;
-        let ultimaVozTs = 0;
 
         // ============================================================
-        // MOTOR DE AUDIO (Web Audio API)
+        // MOTOR DE AUDIO
         // ============================================================
         let audioCtx = null;
         function getAudioCtx() {
@@ -101,50 +99,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             return audioCtx;
         }
 
-        // ============================================================
-        // VOZ ROBOTICA (Web Speech API)
-        // ============================================================
-        let vozElegida = null;
-        function elegirVoz() {
-            if (!window.speechSynthesis) return null;
-            const voces = window.speechSynthesis.getVoices();
-            if (!voces || voces.length === 0) return null;
-            const orden = ["es-PE", "es-MX", "es-US", "es-419", "es-ES"];
-            for (const lang of orden) {
-                const v = voces.find(x => x.lang === lang);
-                if (v) return v;
-            }
-            return voces.find(x => x.lang && x.lang.startsWith("es")) || voces[0];
-        }
-        if (window.speechSynthesis) {
-            window.speechSynthesis.onvoiceschanged = () => { vozElegida = elegirVoz(); };
-            vozElegida = elegirVoz();
-        }
-
-        function hablar(texto, opciones) {
-            if (!window.speechSynthesis) return;
-            const ahora = Date.now();
-            if (ahora - ultimaVozTs < 400) return;
-            ultimaVozTs = ahora;
-
-            try {
-                window.speechSynthesis.cancel();
-                const u = new SpeechSynthesisUtterance(texto);
-                if (!vozElegida) vozElegida = elegirVoz();
-                if (vozElegida) u.voice = vozElegida;
-                u.lang = (vozElegida && vozElegida.lang) || "es-PE";
-                u.rate = (opciones && opciones.rate) || 1.0;
-                u.pitch = (opciones && opciones.pitch) || 0.5;
-                u.volume = (opciones && opciones.volume) || 1.0;
-                window.speechSynthesis.speak(u);
-            } catch (e) {
-                console.warn('[QR] error voz:', e);
-            }
-        }
-
-        // ============================================================
-        // PITIDOS SINTETIZADOS
-        // ============================================================
+        // Helper: un tono
         function _tono(freq, dur, tipo, vol, delay) {
             const ctx = getAudioCtx();
             if (!ctx) return;
@@ -155,71 +110,75 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             osc.type = tipo || 'sine';
             osc.frequency.setValueAtTime(freq, t0);
             g.gain.setValueAtTime(0, t0);
-            g.gain.linearRampToValueAtTime(vol || 0.3, t0 + 0.015);
+            g.gain.linearRampToValueAtTime(vol || 0.35, t0 + 0.015);
             g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
             osc.start(t0);
             osc.stop(t0 + dur + 0.02);
         }
 
-        function pitidoNuevo() {           // Do -> Mi, agradable
-            _tono(523, 0.12, 'sine', 0.35, 0);
-            _tono(659, 0.15, 'sine', 0.35, 0.09);
+        // ============================================================
+        // 5 SONIDOS
+        // ============================================================
+
+        // 1) PUNTUAL: DO -> MI -> SOL, subida alegre
+        function sonidoPuntual() {
+            _tono(523, 0.10, 'sine', 0.40, 0);
+            _tono(659, 0.10, 'sine', 0.40, 0.10);
+            _tono(784, 0.15, 'sine', 0.40, 0.20);
         }
-        function pitidoTardanza() {        // Una nota neutra
-            _tono(440, 0.25, 'sine', 0.30, 0);
+
+        // 2) TARDANZA: nota neutra, plana
+        function sonidoTardanza() {
+            _tono(440, 0.30, 'sine', 0.35, 0);
         }
-        function pitidoDuplicado() {       // Buzz grave descendente
-            _tono(233, 0.18, 'square', 0.26, 0);
-            _tono(185, 0.22, 'square', 0.26, 0.20);
+
+        // 3) DUPLICADO: buzz grave doble, fuerte
+        function sonidoDuplicado() {
+            _tono(220, 0.18, 'square', 0.45, 0);
+            _tono(220, 0.18, 'square', 0.45, 0.22);
         }
-        function pitidoBloqueado() {       // Triple buzz grave, mas agresivo
-            _tono(180, 0.15, 'sawtooth', 0.30, 0);
-            _tono(140, 0.15, 'sawtooth', 0.30, 0.18);
-            _tono(100, 0.30, 'sawtooth', 0.30, 0.36);
+
+        // 4) ERROR (DNI no existe): disonancia horrible ascendente
+        function sonidoError() {
+            _tono(180, 0.15, 'sawtooth', 0.45, 0);
+            _tono(250, 0.15, 'sawtooth', 0.45, 0.15);
+            _tono(330, 0.15, 'sawtooth', 0.45, 0.30);
+            _tono(440, 0.25, 'sawtooth', 0.45, 0.45);
         }
-        function pitidoError() {           // Beep corto seco
-            _tono(330, 0.10, 'square', 0.28, 0);
+
+        // 5) BLOQUEADO (por si acaso): triple buzz grave
+        function sonidoBloqueado() {
+            _tono(160, 0.15, 'sawtooth', 0.45, 0);
+            _tono(120, 0.15, 'sawtooth', 0.45, 0.18);
+            _tono(90, 0.30, 'sawtooth', 0.45, 0.36);
         }
 
         // ============================================================
-        // API PUBLICA: la llama app.py via window.__qrFeedback(kind, texto)
+        // API PARA PYTHON
         // ============================================================
-        window.__qrFeedback = function(kind, texto) {
+        function reproducir(kind) {
             try {
                 getAudioCtx();
-
                 switch (kind) {
-                    case "nuevo":
-                        setStatus("QR: " + (texto || ""));
-                        pitidoNuevo();
-                        hablar("Puntual", { pitch: 0.55, rate: 1.05 });
-                        break;
-                    case "tardanza":
-                        setStatus("QR: " + (texto || "") + " (tardanza)");
-                        pitidoTardanza();
-                        hablar("Tardanza", { pitch: 0.55, rate: 0.95 });
-                        break;
-                    case "duplicado":
-                        setStatus("QR duplicado: " + (texto || ""));
-                        pitidoDuplicado();
-                        hablar("Duplicado", { pitch: 0.40, rate: 0.95 });
-                        break;
-                    case "bloqueado":
-                        setStatus("ALUMNO BLOQUEADO: " + (texto || ""));
-                        pitidoBloqueado();
-                        hablar("Alumno bloqueado", { pitch: 0.35, rate: 0.90, volume: 1.0 });
-                        break;
+                    case "puntual":     sonidoPuntual();     break;
+                    case "tardanza":    sonidoTardanza();    break;
+                    case "duplicado":   sonidoDuplicado();   break;
+                    case "bloqueado":   sonidoBloqueado();   break;
                     case "error":
-                    default:
-                        setStatus("Error: " + (texto || ""));
-                        pitidoError();
-                        hablar("Error", { pitch: 0.50, rate: 1.00 });
-                        break;
+                    default:            sonidoError();       break;
                 }
             } catch (e) {
-                console.error('[QR] __qrFeedback error:', e);
+                console.error('[QR] reproducir error:', e);
             }
-        };
+        }
+
+        // Registrar en window propio Y en window.parent (por si acaso)
+        window.__qrFeedback = reproducir;
+        try {
+            window.parent.__qrFeedback = reproducir;
+        } catch (e) {
+            console.warn('[QR] no se pudo registrar en parent:', e);
+        }
 
         // ============================================================
         // UTILIDADES
@@ -267,12 +226,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             iniciado = true;
 
             getAudioCtx();
-            if (window.speechSynthesis) {
-                try {
-                    const u = new SpeechSynthesisUtterance("");
-                    window.speechSynthesis.speak(u);
-                } catch (e) {}
-            }
 
             setTimeout(() => {
                 if (!iniciado) return;
@@ -295,6 +248,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                         const m = texto.match(/\\b(\\d{8})\\b/);
                         if (!m) return;
                         const dni = m[1];
+                        setStatus('QR: ' + dni);
                         setTriggerValue("qr_dni", dni);
                     } catch (e) {
                         console.error('[QR] error en onScanSuccess:', e);
@@ -318,17 +272,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                         .then(() => setStatus('Camara activa.'))
                         .catch((e) => {
                             const msg = (e && e.message) ? e.message : String(e);
-                            if (msg.includes('NotAllowedError')) {
-                                setError('Permiso de camara denegado. Acepta el permiso o usa HTTPS.');
-                            } else if (msg.includes('NotFoundError')) {
-                                setError('No se encontro ninguna camara en este dispositivo.');
-                            } else if (msg.includes('NotReadableError')) {
-                                setError('La camara esta siendo usada por otra aplicacion.');
-                            } else if (msg.includes('AbortError')) {
-                                setError('Firefox aborto el inicio de la camara. Recarga la pagina e intenta de nuevo.');
-                            } else {
-                                setError('Error camara: ' + msg);
-                            }
+                            setError('Error camara: ' + msg);
                             iniciado = false;
                         });
                 } else {
@@ -342,34 +286,34 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         // ============================================================
         window.addEventListener('beforeunload', destruirScanner);
 
-        if (window.__qrV12Listo && typeof Html5QrcodeScanner !== 'undefined') {
+        if (window.__qrV17Listo && typeof Html5QrcodeScanner !== 'undefined') {
             iniciarScanner();
             return;
         }
-        if (window.__qrV12Cargando) {
+        if (window.__qrV17Cargando) {
             let n = 0;
             const t = setInterval(() => {
                 n++;
                 if (typeof Html5QrcodeScanner !== 'undefined') {
                     clearInterval(t);
-                    window.__qrV12Listo = true;
-                    window.__qrV12Cargando = false;
+                    window.__qrV17Listo = true;
+                    window.__qrV17Cargando = false;
                     iniciarScanner();
                 } else if (n > 100) {
                     clearInterval(t);
-                    window.__qrV12Cargando = false;
+                    window.__qrV17Cargando = false;
                     setError('Timeout cargando libreria.');
                 }
             }, 100);
             return;
         }
-        window.__qrV12Cargando = true;
+        window.__qrV17Cargando = true;
         const s = document.createElement('script');
         s.src = 'https://unpkg.com/html5-qrcode';
         s.async = true;
         s.onload = () => {
-            window.__qrV12Listo = true;
-            window.__qrV12Cargando = false;
+            window.__qrV17Listo = true;
+            window.__qrV17Cargando = false;
             setTimeout(() => {
                 if (typeof Html5QrcodeScanner === 'undefined') {
                     setError('Libreria cargada pero sin Html5QrcodeScanner.');
@@ -379,7 +323,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             }, 50);
         };
         s.onerror = () => {
-            window.__qrV12Cargando = false;
+            window.__qrV17Cargando = false;
             setError('Error al cargar html5-qrcode del CDN.');
         };
         document.head.appendChild(s);
@@ -389,11 +333,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
 
 
 def qr_scanner(key="qr_scanner", on_scan=None):
-    """
-    Monta el componente escaner QR.
-    El sonido/voz lo dispara el app.py via window.__qrFeedback(kind, texto)
-    con kind: 'nuevo' | 'tardanza' | 'duplicado' | 'bloqueado' | 'error'
-    """
     if on_scan is None:
         on_scan = lambda: None
     return QR_SCANNER_COMPONENT(
