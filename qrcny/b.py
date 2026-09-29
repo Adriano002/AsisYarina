@@ -863,7 +863,7 @@ def _procesar_escaneo(dni):
     elif ok:
         if tipo == "TARDANZA":
             feedback = "tardanza"
-        else:  
+        else:  # PUNTUAL o REFORZAMIENTO
             feedback = "nuevo"
     else:
         feedback = "error"
@@ -909,9 +909,21 @@ def escaner_qr_continuo(key="qr_scanner"):
     def _on_scan():
         pass
 
-    # Key unica por montaje para forzar iframe nuevo al volver a la vista
     mount_id = st.session_state.get("_qr_mount_id", 0)
-    result = qr_scanner(key="qr_" + key + "_" + str(mount_id), on_scan=_on_scan)
+
+    # Tomar feedback pendiente (si hay) para pasarlo al componente
+    fb = st.session_state.get("_qr_feedback_pendiente")
+    feedback_kind = fb["kind"] if fb else ""
+    feedback_texto = (fb["texto"] or "")[:60] if fb else ""
+    feedback_ts = fb.get("ts", 0) if fb else 0
+
+    result = qr_scanner(
+        key="qr_" + key + "_" + str(mount_id),
+        on_scan=_on_scan,
+        feedback_kind=feedback_kind,
+        feedback_texto=feedback_texto,
+        feedback_ts=feedback_ts,
+    )
 
     if result is not None and getattr(result, "qr_dni", None):
         dni = result.qr_dni
@@ -920,34 +932,8 @@ def escaner_qr_continuo(key="qr_scanner"):
             st.session_state["_ultimo_qr_scan"] = {"dni": dni, "ts": time.time()}
             _procesar_escaneo(dni)
 
-    # Puente Python -> JS: pitido diferenciado + cartel visual
-    fb = st.session_state.get("_qr_feedback_pendiente")
-    if fb and (time.time() - fb.get("ts", 0)) < 5:
-        texto_js = fb["texto"].replace("\\", "\\\\").replace("'", "\\'").replace("\n", " ")[:60]
-        st.components.v1.html(f"""
-            <script>
-            (function() {{
-                let tries = 0;
-                const buscar = () => {{
-                    tries++;
-                    try {{
-                        const frames = document.querySelectorAll('iframe');
-                        for (const f of frames) {{
-                            try {{
-                                const w = f.contentWindow;
-                                if (w && w.__qrFeedback) {{
-                                    w.__qrFeedback('{fb["kind"]}', '{texto_js}');
-                                    return;
-                                }}
-                            }} catch(e) {{}}
-                        }}
-                    }} catch(e) {{}}
-                    if (tries < 40) setTimeout(buscar, 100);
-                }};
-                buscar();
-            }})();
-            </script>
-        """, height=0)
+    # Consumir el feedback ya enviado al componente
+    if fb:
         st.session_state.pop("_qr_feedback_pendiente", None)
 
     if st.session_state.get("_qr_mensajes"):
