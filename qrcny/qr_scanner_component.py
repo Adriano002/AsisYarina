@@ -1,22 +1,25 @@
 # qr_scanner_component.py
 # Componente de escaneo QR para Streamlit con feedback de sonido en TIEMPO REAL.
 #
-# - El JS recibe del backend la lista de DNIs ya registrados hoy y los bloqueados.
-# - Al detectar un QR, el JS decide el sonido LOCALMENTE y lo dispara AL INSTANTE.
-# - No espera a Python para sonar (elimina la latencia del rerun de Streamlit).
-# - Anti-rebote y MUTE en window.parent (compartido entre iframes hermanos).
-# - Cola interna de sonidos que se vacia si esta muteado.
-# - Pausa el scanner 3s despues de cada lectura (evita loop infinito).
+# SOLUCION DEFINITIVA AL SONIDO EN LOOP:
+# - Al detectar un QR, se dispara el sonido UNA VEZ.
+# - Inmediatamente se DESTRUYE el scanner (scanner.clear()) para que no
+#   pueda seguir detectando el mismo QR.
+# - Aparece un boton "Escanear siguiente alumno" para reactivar la camara.
+# - Asi es IMPOSIBLE que un sonido se quede pegado.
 import streamlit as st
 
 QR_SCANNER_COMPONENT = st.components.v2.component(
-    name="mi_qr_scanner_v23",
+    name="mi_qr_scanner_v24",
     isolate_styles=False,
     html="""
     <div id="qr-wrapper">
         <div id="qr-reader"></div>
         <div id="qr-status">Iniciando camara...</div>
         <div id="qr-error" style="display:none;"></div>
+        <button id="qr-reanudar" style="display:none; margin-top:14px; padding:14px 24px; background:#E65100; color:white; border:none; border-radius:8px; font-weight:700; font-size:16px; cursor:pointer; width:100%; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+            Escanear siguiente alumno
+        </button>
     </div>
     """,
     css="""
@@ -48,6 +51,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         margin: 4px !important; border: 1px solid #ccc !important;
     }
     #qr-reader a { color: #E65100 !important; font-weight: 600 !important; }
+    #qr-reanudar:hover { background: #BF360C !important; }
     """,
     js="""
     export default function(component) {
@@ -72,54 +76,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         let scanner = null;
         let iniciado = false;
         let reiniciando = false;
-        let pausadoPorLectura = false;
-
-        // ============================================================
-        // ACCESO A window.parent (compartido entre TODOS los iframes hijos)
-        // ============================================================
-        // Cada iframe de Streamlit tiene su propio localStorage (sandboxed),
-        // pero TODOS comparten el mismo window.parent. Por eso usamos parent
-        // para el mute y el cache: sobrevive a remounts y se comparte entre
-        // el iframe viejo y el nuevo durante la transicion.
-        function parentGet(key, defaultVal) {
-            try {
-                if (window.parent && window.parent[key] !== undefined) {
-                    return window.parent[key];
-                }
-            } catch (e) {}
-            return defaultVal;
-        }
-
-        function parentSet(key, val) {
-            try {
-                window.parent[key] = val;
-            } catch (e) {
-                try { window[key] = val; } catch (e2) {}
-            }
-        }
-
-        // ============================================================
-        // MUTE GLOBAL
-        // ============================================================
-        function estaMuteado() {
-            const muteHasta = parseInt(parentGet('__qrMuteHasta', 0), 10) || 0;
-            return Date.now() < muteHasta;
-        }
-
-        function mutearPor(ms) {
-            parentSet('__qrMuteHasta', Date.now() + ms);
-        }
-
-        // ============================================================
-        // CACHE GLOBAL DE ESCANEOS
-        // ============================================================
-        function leerCacheScan() {
-            return parentGet('__qrCacheScan', {}) || {};
-        }
-
-        function guardarCacheScan(cache) {
-            parentSet('__qrCacheScan', cache);
-        }
+        let detenidoPorLectura = false;
 
         // ============================================================
         // AUDIO
@@ -128,6 +85,10 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         let audioDesbloqueado = false;
 
         function getAudioCtx() {
+            if (audioCtx && audioCtx.state === 'closed') {
+                audioCtx = null;
+                audioDesbloqueado = false;
+            }
             if (!audioCtx) {
                 try {
                     const AC = window.AudioContext || window.webkitAudioContext;
@@ -215,26 +176,12 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         let reproduciendo = false;
 
         function encolarSonido(kind) {
-            // Chequeo 1: al ENCOLAR, si esta muteado, no encolar
-            if (estaMuteado()) {
-                console.log('[QR] encolar bloqueado por mute:', kind);
-                return;
-            }
             colaSonidos.push(kind);
             if (!reproduciendo) procesarCola();
         }
 
         function procesarCola() {
             if (colaSonidos.length === 0) { reproduciendo = false; return; }
-
-            // Chequeo 2: al REPRODUCIR, si esta muteado, vaciar cola
-            if (estaMuteado()) {
-                console.log('[QR] cola vaciada por mute (' + colaSonidos.length + ' sonidos)');
-                colaSonidos = [];
-                reproduciendo = false;
-                return;
-            }
-
             reproduciendo = true;
             const kind = colaSonidos.shift();
             const duracionMs = reproducir(kind);
@@ -288,47 +235,57 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             if (s) s.style.display = 'none';
             console.error('[QR]', t);
         }
+
+        function mostrarBotonReanudar() {
+            const btn = document.getElementById('qr-reanudar');
+            if (btn) btn.style.display = 'block';
+        }
+        function ocultarBotonReanudar() {
+            const btn = document.getElementById('qr-reanudar');
+            if (btn) btn.style.display = 'none';
+        }
+
         function destruirScanner() {
             if (scanner) {
-                try { scanner.clear(); } catch (e) {}
+                try { scanner.clear().catch(() => {}); } catch (e) {}
                 scanner = null;
             }
             iniciado = false;
         }
 
         // ============================================================
-        // PAUSAR SCANNER DESPUES DE CADA LECTURA
+        // DETENER SCANNER TRAS CADA LECTURA
         // ============================================================
-        function pausarYReanudar() {
-            if (pausadoPorLectura) return;
-            pausadoPorLectura = true;
+        function detenerScanner() {
+            if (detenidoPorLectura) return;
+            detenidoPorLectura = true;
 
+            // Destruir el scanner inmediatamente
             try {
-                if (scanner && typeof scanner.pause === 'function') {
-                    scanner.pause(true);
-                    console.log('[QR] Scanner pausado 3s');
+                if (scanner && typeof scanner.clear === 'function') {
+                    scanner.clear().catch(() => {});
                 }
-            } catch (e) {
-                console.warn('[QR] pause fallo:', e);
-            }
+            } catch (e) {}
+            scanner = null;
+            iniciado = false;
 
-            setTimeout(() => {
-                try {
-                    if (scanner && typeof scanner.resume === 'function') {
-                        scanner.resume();
-                        console.log('[QR] Scanner reanudado');
-                    }
-                } catch (e) {
-                    console.warn('[QR] resume fallo:', e);
-                }
-                pausadoPorLectura = false;
-            }, 3000);
+            // NO vaciamos la cola: dejamos que termine el ultimo sonido
+            // (asi el "uh-uh" del duplicado se escucha completo)
+
+            // Mostrar boton para reanudar
+            mostrarBotonReanudar();
+            setStatus('Escaneo completado. Click en el boton para el siguiente.');
+
+            console.log('[QR] Scanner detenido - esperando click');
         }
 
         // ============================================================
         // SCANNER
         // ============================================================
         function iniciarScanner() {
+            ocultarBotonReanudar();
+            detenidoPorLectura = false;
+
             if (iniciado) return;
             if (typeof Html5QrcodeScanner === 'undefined') {
                 setError('Libreria QR no cargada.');
@@ -353,7 +310,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                 scanner = new Html5QrcodeScanner(
                     "qr-reader",
                     {
-                        fps: 5,
+                        fps: 10,
                         qrbox: { width: 250, height: 250 },
                         aspectRatio: 1.0,
                         rememberLastUsedCamera: true,
@@ -366,39 +323,18 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
 
                 const onScanSuccess = (texto) => {
                     try {
+                        // Si ya detuvimos por una lectura, ignorar
+                        if (detenidoPorLectura) return;
+
                         const m = texto.match(/\\b(\\d{8})\\b/);
                         if (!m) return;
                         const dni = m[1];
 
-                        // === ANTI-REBOTE GLOBAL (window.parent, sobrevive a remounts) ===
-                        const ahora = Date.now();
-                        let cache = leerCacheScan();
-
-                        // Limpiar entradas viejas (>10s)
-                        for (const k of Object.keys(cache)) {
-                            if ((ahora - cache[k]) > 10000) delete cache[k];
-                        }
-
-                        // Si este DNI ya fue escaneado hace <10s, IGNORAR
-                        if (cache[dni]) {
-                            setStatus('QR ya leido: ' + dni);
-                            // Renovar el mute para que el iframe viejo no suene
-                            mutearPor(3000);
-                            return;
-                        }
-
-                        cache[dni] = ahora;
-                        guardarCacheScan(cache);
-
                         setStatus('QR: ' + dni);
 
-                        // Sonido en tiempo real
+                        // Decidir sonido localmente y dispararlo UNA VEZ
                         const sonido = decidirSonidoLocal(dni);
                         encolarSonido(sonido);
-
-                        // MUTE GLOBAL 3 segundos: cualquier iframe que intente
-                        // sonar durante este tiempo, no sonara.
-                        mutearPor(3000);
 
                         // Actualizar cache local
                         if (sonido === "puntual") {
@@ -408,8 +344,9 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                         // Enviar a Python
                         setTriggerValue("qr_dni", dni);
 
-                        // Pausar el scanner 3s
-                        pausarYReanudar();
+                        // DETENER EL SCANNER INMEDIATAMENTE
+                        // (asi es imposible que el mismo QR dispare otra vez)
+                        detenerScanner();
                     } catch (e) {
                         console.error('[QR] error en onScanSuccess:', e);
                     }
@@ -475,6 +412,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'visible') {
                 setTimeout(() => {
+                    if (detenidoPorLectura) return;
                     const ok = reanudarCamara();
                     if (!ok && iniciado && !reiniciando) {
                         reiniciando = true;
@@ -498,42 +436,56 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         });
 
         window.addEventListener('pageshow', () => {
-            setTimeout(() => { if (iniciado) reanudarCamara(); }, 300);
+            setTimeout(() => { if (iniciado && !detenidoPorLectura) reanudarCamara(); }, 300);
         });
+
+        // ============================================================
+        // BOTON REANUDAR
+        // ============================================================
+        setTimeout(() => {
+            const btn = document.getElementById('qr-reanudar');
+            if (btn) {
+                btn.addEventListener('click', () => {
+                    console.log('[QR] Click en reanudar');
+                    detenidoPorLectura = false;
+                    iniciarScanner();
+                });
+            }
+        }, 200);
 
         // ============================================================
         // CARGA DE LIBRERIA
         // ============================================================
         window.addEventListener('beforeunload', destruirScanner);
 
-        if (window.__qrV23Listo && typeof Html5QrcodeScanner !== 'undefined') {
+        if (window.__qrV24Listo && typeof Html5QrcodeScanner !== 'undefined') {
             iniciarScanner();
             return;
         }
-        if (window.__qrV23Cargando) {
+        if (window.__qrV24Cargando) {
             let n = 0;
             const t = setInterval(() => {
                 n++;
                 if (typeof Html5QrcodeScanner !== 'undefined') {
                     clearInterval(t);
-                    window.__qrV23Listo = true;
-                    window.__qrV23Cargando = false;
+                    window.__qrV24Listo = true;
+                    window.__qrV24Cargando = false;
                     iniciarScanner();
                 } else if (n > 100) {
                     clearInterval(t);
-                    window.__qrV23Cargando = false;
+                    window.__qrV24Cargando = false;
                     setError('Timeout cargando libreria.');
                 }
             }, 100);
             return;
         }
-        window.__qrV23Cargando = true;
+        window.__qrV24Cargando = true;
         const s = document.createElement('script');
         s.src = 'https://unpkg.com/html5-qrcode';
         s.async = true;
         s.onload = () => {
-            window.__qrV23Listo = true;
-            window.__qrV23Cargando = false;
+            window.__qrV24Listo = true;
+            window.__qrV24Cargando = false;
             setTimeout(() => {
                 if (typeof Html5QrcodeScanner === 'undefined') {
                     setError('Libreria cargada pero sin Html5QrcodeScanner.');
@@ -543,7 +495,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             }, 50);
         };
         s.onerror = () => {
-            window.__qrV23Cargando = false;
+            window.__qrV24Cargando = false;
             setError('Error al cargar html5-qrcode del CDN.');
         };
         document.head.appendChild(s);
