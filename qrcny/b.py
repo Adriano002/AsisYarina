@@ -853,7 +853,7 @@ def _procesar_escaneo(dni):
     ok, tipo, msg, extra = registrar_entrada(dni, u, origen="qr")
 
     # Clasificar feedback para el componente JS
-     if not ok and tipo == "ERROR":
+    if not ok and tipo == "ERROR":
         if "ya registro" in msg or "ya tiene" in msg:
             feedback = "duplicado"
         else:
