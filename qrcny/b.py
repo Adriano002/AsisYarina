@@ -911,21 +911,14 @@ def _procesar_escaneo(dni):
     if not u: return
     ok, tipo, msg, extra = registrar_entrada(dni, u, origen="qr")
 
-    if not ok and tipo == "ERROR":
-        if "ya registro" in msg or "ya tiene" in msg:
-            sonido = "duplicado"
-        elif "DNI no encontrado" in msg:
-            sonido = "error"
-        else:
-            sonido = "error"
-    elif tipo == "BLOQUEADO":
-        sonido = "bloqueado"
-    elif ok and tipo == "TARDANZA":
-        sonido = "tardanza"
-    elif ok:
-        sonido = "puntual"
-    else:
-        sonido = "error"
+    # Actualizar cache local del escaneo para que el JS no repita sonido erroneo
+    # (el JS ya sono al instante; Python actualiza la lista por si hay mas escaneos)
+    st.session_state.setdefault("_qr_registrados_hoy", {})
+    if ok and tipo in ("PUNTUAL", "TARDANZA", "REFORZAMIENTO"):
+        st.session_state["_qr_registrados_hoy"][dni] = {
+            "estado": PUNTUAL if tipo == "PUNTUAL" else TARDANZA,
+            "hora": hora_corta(),
+        }
 
     st.session_state.setdefault("_qr_mensajes", [])
     st.session_state["_qr_mensajes"].insert(0, {
@@ -934,28 +927,39 @@ def _procesar_escaneo(dni):
     })
     st.session_state["_qr_mensajes"] = st.session_state["_qr_mensajes"][:10]
 
-    st.session_state["_qr_sonido_pendiente"] = {
-        "kind": sonido,
-        "ts": time.time(),
-    }
 
-def _render_mensaje_qr(msg):
-    tipo = msg["tipo"]; mensaje = msg["mensaje"]
-    clase = {"PUNTUAL":"qr-puntual","TARDANZA":"qr-tardanza","REFORZAMIENTO":"qr-refuerzo",
-             "BLOQUEADO":"qr-bloqueado","ERROR":"qr-error"}.get(tipo, "qr-error")
+def _construir_estado_para_scanner():
+    """Devuelve (ya_registrados, bloqueados) para pasarle al componente JS."""
+    con = obtener_conexion()
+    hoy = hoy_str()
+    try:
+        filas = con.execute(
+            "SELECT a.dni, ast.estado, ast.hora FROM asistencias ast "
+            "JOIN alumnos a ON ast.alumno_id=a.id "
+            "WHERE ast.fecha=? AND ast.tipo='clases'",
+            (hoy,)
+        ).fetchall()
+        ya = {f["dni"]: {"estado": f["estado"], "hora": f["hora"] or ""} for f in filas}
+    except Exception:
+        ya = {}
 
-    if tipo == "TARDANZA":
-        acc = (msg.get("extra") or {}).get("accion")
-        if acc == ACC_DERIVADO:
-            mensaje += " -> Derivar a TOECE"; clase = "qr-derivado"
-        elif acc == ACC_RETENIDO:
-            mensaje += " -> Retener hasta apoderado"; clase = "qr-retenido"
+    # Mezclar con lo que el propio JS ya vio en esta sesion
+    cache_sesion = st.session_state.get("_qr_registrados_hoy", {})
+    for dni, info in cache_sesion.items():
+        if dni not in ya:
+            ya[dni] = info
 
-    st.markdown(
-        '<div class="qr-msg ' + clase + '"><div class="qr-texto">' +
-        mensaje + '</div></div>',
-        unsafe_allow_html=True
-    )
+    try:
+        filas_b = con.execute(
+            "SELECT a.dni FROM bloqueos b JOIN alumnos a ON b.alumno_id=a.id "
+            "WHERE b.activo=1"
+        ).fetchall()
+        bloqueados = [f["dni"] for f in filas_b]
+    except Exception:
+        bloqueados = []
+
+    return ya, bloqueados
+
 
 def escaner_qr_continuo(key="qr_scanner"):
     st.markdown(
@@ -967,50 +971,21 @@ def escaner_qr_continuo(key="qr_scanner"):
     def _on_scan():
         pass
 
-    mount_id = st.session_state.get("_qr_mount_id", 0)
-    result = qr_scanner(key="qr_" + key + "_" + str(mount_id), on_scan=_on_scan)
+    ya_registrados, bloqueados = _construir_estado_para_scanner()
+
+    result = qr_scanner(
+        key="qr_" + key,
+        on_scan=_on_scan,
+        ya_registrados=ya_registrados,
+        bloqueados=bloqueados,
+    )
 
     if result is not None and getattr(result, "qr_dni", None):
         dni = result.qr_dni
         ult = st.session_state.get("_ultimo_qr_scan", {})
-        if not (ult.get("dni") == dni and (time.time() - ult.get("ts", 0)) < 3):
+        if not (ult.get("dni") == dni and (time.time() - ult.get("ts", 0)) < 1.5):
             st.session_state["_ultimo_qr_scan"] = {"dni": dni, "ts": time.time()}
             _procesar_escaneo(dni)
-
-    sp = st.session_state.get("_qr_sonido_pendiente")
-    if sp and (time.time() - sp.get("ts", 0)) < 5:
-        kind_js = sp["kind"]
-        st.components.v1.html(f"""
-            <script>
-            (function() {{
-                let tries = 0;
-                const disparar = () => {{
-                    tries++;
-                    try {{
-                        if (window.parent && typeof window.parent.__qrFeedback === 'function') {{
-                            window.parent.__qrFeedback('{kind_js}');
-                            return;
-                        }}
-                    }} catch(e) {{}}
-                    try {{
-                        const frames = document.querySelectorAll('iframe');
-                        for (const f of frames) {{
-                            try {{
-                                const w = f.contentWindow;
-                                if (w && typeof w.__qrFeedback === 'function') {{
-                                    w.__qrFeedback('{kind_js}');
-                                    return;
-                                }}
-                            }} catch(e) {{}}
-                        }}
-                    }} catch(e) {{}}
-                    if (tries < 60) setTimeout(disparar, 100);
-                }};
-                disparar();
-            }})();
-            </script>
-        """, height=0)
-        st.session_state.pop("_qr_sonido_pendiente", None)
 
     if st.session_state.get("_qr_mensajes"):
         st.markdown('<div class="scan-ultimos">Ultimos escaneos</div>', unsafe_allow_html=True)
