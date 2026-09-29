@@ -3238,34 +3238,14 @@ def menu_lateral():
     opciones = obtener_opciones_por_rol(usuario)
     with st.sidebar:
         inicial = (usuario["nombres"] or "?")[0].upper()
-        st.markdown('<div class="encabezado-sidebar"><div class="avatar">' + inicial + '</div><div class="nombre">' + usuario["nombres"] + '</div><div class="rol">' + rol + '</div></div>', unsafe_allow_html=True)
-        with st.expander("Buscar alumno", expanded=False):
-            q = st.text_input("Nombre o DNI", key="global_search")
-            if q and len(q) >= 3:
-                df_gs = buscar_alumnos_con_estado(q, limite=15)
-                if df_gs.empty:
-                    st.caption("Sin resultados")
-                else:
-                    for _, al in df_gs.iterrows():
-                        estado = al["estado_hoy"]
-                        hora = al["hora_hoy"]
-                        if estado == "Puntual":
-                            etiqueta = "Puntual"
-                        elif estado == "Tardanza":
-                            etiqueta = "Tardanza"
-                        elif estado == "Falta":
-                            etiqueta = "Falta"
-                        elif estado == "Permiso":
-                            etiqueta = "Permiso"
-                        else:
-                            etiqueta = "Sin registro hoy"
-                        if hora:
-                            etiqueta += " - " + hora
-                        st.markdown(
-                            "**" + al['nombre_completo'] + "** — " + al['grado'] + " " + al['seccion'] + "  \n"
-                            + etiqueta
-                        )
-                        st.markdown("---")
+        st.markdown(
+            '<div class="encabezado-sidebar">'
+            '<div class="avatar">' + inicial + '</div>'
+            '<div class="nombre">' + usuario["nombres"] + '</div>'
+            '<div class="rol">' + rol + '</div>'
+            '</div>',
+            unsafe_allow_html=True
+        )
         if "menu" not in st.session_state or st.session_state["menu"] not in opciones:
             st.session_state["menu"] = opciones[0]
         op = st.radio("Menu", opciones, key="menu", label_visibility="collapsed")
