@@ -4,15 +4,13 @@
 # - El JS recibe del backend la lista de DNIs ya registrados hoy y los bloqueados.
 # - Al detectar un QR, el JS decide el sonido LOCALMENTE y lo dispara AL INSTANTE.
 # - No espera a Python para sonar (elimina la latencia del rerun de Streamlit).
-# - Python igual procesa el escaneo despues (para actualizar BD y estado).
-# - Cola interna de sonidos para que nunca se pisen.
-# - Anti-rebote GLOBAL en localStorage (sobrevive a remounts y recargas).
-# - MUTE GLOBAL en localStorage: silencia TODOS los iframes 10s tras cada escaneo.
+# - Anti-rebote y MUTE en window.parent (compartido entre iframes hermanos).
+# - Cola interna de sonidos que se vacia si esta muteado.
 # - Pausa el scanner 3s despues de cada lectura (evita loop infinito).
 import streamlit as st
 
 QR_SCANNER_COMPONENT = st.components.v2.component(
-    name="mi_qr_scanner_v22",
+    name="mi_qr_scanner_v23",
     isolate_styles=False,
     html="""
     <div id="qr-wrapper">
@@ -77,39 +75,50 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         let pausadoPorLectura = false;
 
         // ============================================================
-        // MUTE GLOBAL (localStorage) - sobrevive a remounts y a iframes viejos
+        // ACCESO A window.parent (compartido entre TODOS los iframes hijos)
+        // ============================================================
+        // Cada iframe de Streamlit tiene su propio localStorage (sandboxed),
+        // pero TODOS comparten el mismo window.parent. Por eso usamos parent
+        // para el mute y el cache: sobrevive a remounts y se comparte entre
+        // el iframe viejo y el nuevo durante la transicion.
+        function parentGet(key, defaultVal) {
+            try {
+                if (window.parent && window.parent[key] !== undefined) {
+                    return window.parent[key];
+                }
+            } catch (e) {}
+            return defaultVal;
+        }
+
+        function parentSet(key, val) {
+            try {
+                window.parent[key] = val;
+            } catch (e) {
+                try { window[key] = val; } catch (e2) {}
+            }
+        }
+
+        // ============================================================
+        // MUTE GLOBAL
         // ============================================================
         function estaMuteado() {
-            try {
-                const muteHasta = parseInt(localStorage.getItem('__qrMuteHasta') || '0', 10);
-                return Date.now() < muteHasta;
-            } catch (e) {
-                return false;
-            }
+            const muteHasta = parseInt(parentGet('__qrMuteHasta', 0), 10) || 0;
+            return Date.now() < muteHasta;
         }
 
         function mutearPor(ms) {
-            try {
-                localStorage.setItem('__qrMuteHasta', String(Date.now() + ms));
-            } catch (e) {}
+            parentSet('__qrMuteHasta', Date.now() + ms);
         }
 
         // ============================================================
-        // CACHE GLOBAL DE ESCANEOS (localStorage) - sobrevive a remounts
+        // CACHE GLOBAL DE ESCANEOS
         // ============================================================
         function leerCacheScan() {
-            try {
-                const raw = localStorage.getItem('__qrCacheScan');
-                return raw ? JSON.parse(raw) : {};
-            } catch (e) {
-                return {};
-            }
+            return parentGet('__qrCacheScan', {}) || {};
         }
 
         function guardarCacheScan(cache) {
-            try {
-                localStorage.setItem('__qrCacheScan', JSON.stringify(cache));
-            } catch (e) {}
+            parentSet('__qrCacheScan', cache);
         }
 
         // ============================================================
@@ -206,9 +215,9 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         let reproduciendo = false;
 
         function encolarSonido(kind) {
-            // Si esta muteado globalmente, no reproducir
+            // Chequeo 1: al ENCOLAR, si esta muteado, no encolar
             if (estaMuteado()) {
-                console.log('[QR] sonido bloqueado por mute global:', kind);
+                console.log('[QR] encolar bloqueado por mute:', kind);
                 return;
             }
             colaSonidos.push(kind);
@@ -216,10 +225,16 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         }
 
         function procesarCola() {
-            if (colaSonidos.length === 0) {
+            if (colaSonidos.length === 0) { reproduciendo = false; return; }
+
+            // Chequeo 2: al REPRODUCIR, si esta muteado, vaciar cola
+            if (estaMuteado()) {
+                console.log('[QR] cola vaciada por mute (' + colaSonidos.length + ' sonidos)');
+                colaSonidos = [];
                 reproduciendo = false;
                 return;
             }
+
             reproduciendo = true;
             const kind = colaSonidos.shift();
             const duracionMs = reproducir(kind);
@@ -355,7 +370,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                         if (!m) return;
                         const dni = m[1];
 
-                        // === ANTI-REBOTE GLOBAL (localStorage, sobrevive a remounts) ===
+                        // === ANTI-REBOTE GLOBAL (window.parent, sobrevive a remounts) ===
                         const ahora = Date.now();
                         let cache = leerCacheScan();
 
@@ -381,8 +396,8 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                         const sonido = decidirSonidoLocal(dni);
                         encolarSonido(sonido);
 
-                        // MUTE GLOBAL 3 segundos: cualquier iframe (viejo o nuevo)
-                        // que intente sonar durante este tiempo, no sonara.
+                        // MUTE GLOBAL 3 segundos: cualquier iframe que intente
+                        // sonar durante este tiempo, no sonara.
                         mutearPor(3000);
 
                         // Actualizar cache local
@@ -491,34 +506,34 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         // ============================================================
         window.addEventListener('beforeunload', destruirScanner);
 
-        if (window.__qrV22Listo && typeof Html5QrcodeScanner !== 'undefined') {
+        if (window.__qrV23Listo && typeof Html5QrcodeScanner !== 'undefined') {
             iniciarScanner();
             return;
         }
-        if (window.__qrV22Cargando) {
+        if (window.__qrV23Cargando) {
             let n = 0;
             const t = setInterval(() => {
                 n++;
                 if (typeof Html5QrcodeScanner !== 'undefined') {
                     clearInterval(t);
-                    window.__qrV22Listo = true;
-                    window.__qrV22Cargando = false;
+                    window.__qrV23Listo = true;
+                    window.__qrV23Cargando = false;
                     iniciarScanner();
                 } else if (n > 100) {
                     clearInterval(t);
-                    window.__qrV22Cargando = false;
+                    window.__qrV23Cargando = false;
                     setError('Timeout cargando libreria.');
                 }
             }, 100);
             return;
         }
-        window.__qrV22Cargando = true;
+        window.__qrV23Cargando = true;
         const s = document.createElement('script');
         s.src = 'https://unpkg.com/html5-qrcode';
         s.async = true;
         s.onload = () => {
-            window.__qrV22Listo = true;
-            window.__qrV22Cargando = false;
+            window.__qrV23Listo = true;
+            window.__qrV23Cargando = false;
             setTimeout(() => {
                 if (typeof Html5QrcodeScanner === 'undefined') {
                     setError('Libreria cargada pero sin Html5QrcodeScanner.');
@@ -528,7 +543,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             }, 50);
         };
         s.onerror = () => {
-            window.__qrV22Cargando = false;
+            window.__qrV23Cargando = false;
             setError('Error al cargar html5-qrcode del CDN.');
         };
         document.head.appendChild(s);
