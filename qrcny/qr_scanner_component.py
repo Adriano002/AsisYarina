@@ -1,12 +1,6 @@
 # qr_scanner_component.py
 # Componente de escaneo QR para Streamlit.
-# Registra window.parent.__qrFeedback(kind) para que Python dispare
-# 4 sonidos distintos: puntual | tardanza | duplicado | error.
-#
-# FIX v18:
-# - Edge detection en onScanSuccess: el mismo QR ya NO se emite 10 veces/seg.
-# - Cooldown configurable por DNI (default 2500 ms).
-# - Reset del estado al destruir el scanner.
+# - destruirScanner resetea el estado de edge detection.
 import streamlit as st
 
 QR_SCANNER_COMPONENT = st.components.v2.component(
@@ -85,6 +79,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         const { setTriggerValue } = component;
         let scanner = null;
         let iniciado = false;
+        let pausado = false;
 
         // ============================================================
         // EDGE DETECTION - evita emitir el mismo DNI multiples veces
@@ -207,6 +202,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             console.error('[QR]', t);
         }
         function destruirScanner() {
+            pausado = false;
             if (scanner) {
                 try { scanner.clear(); } catch (e) {}
                 scanner = null;
@@ -271,7 +267,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
 
                         if (esMismoDni && dentroCooldown) {
                             // Mismo QR en camara: ignorar silenciosamente.
-                            // No emitir a Python, no repetir sonido.
                             return;
                         }
 
@@ -310,6 +305,55 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                 }
             }, 500);
         }
+
+        // ============================================================
+        // VISIBILITY - pausar/reanudar al cambiar de pestaña
+        // ============================================================
+        function pausarScanner() {
+            if (!scanner || !iniciado || pausado) return;
+            try {
+                scanner.pause(true);   // true = congela tambien el video
+                pausado = true;
+                setStatus('Camara en pausa (volviste a la pestana).');
+            } catch (e) {
+                console.warn('[QR] pause fallo:', e);
+                // Si pause falla, mejor destruir para que al volver se reinicie
+                destruirScanner();
+            }
+        }
+
+        function reanudarScanner() {
+            if (!scanner || !iniciado) {
+                // No hay scanner vivo: reiniciar
+                iniciarScanner();
+                return;
+            }
+            try {
+                scanner.resume();
+                pausado = false;
+                setStatus('Camara activa.');
+            } catch (e) {
+                console.warn('[QR] resume fallo, reiniciando:', e);
+                destruirScanner();
+                iniciarScanner();
+            }
+        }
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden') {
+                pausarScanner();
+            } else if (document.visibilityState === 'visible') {
+                reanudarScanner();
+            }
+        });
+
+        // Extra: al perder foco la ventana (alt-tab), tambien pausar
+        window.addEventListener('blur', () => {
+            if (document.visibilityState === 'hidden') pausarScanner();
+        });
+        window.addEventListener('focus', () => {
+            if (document.visibilityState === 'visible') reanudarScanner();
+        });
 
         // ============================================================
         // CARGA DE LIBRERIA
