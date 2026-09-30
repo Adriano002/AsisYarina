@@ -2,10 +2,15 @@
 # Componente de escaneo QR para Streamlit.
 # Registra window.parent.__qrFeedback(kind) para que Python dispare
 # 4 sonidos distintos: puntual | tardanza | duplicado | error.
+#
+# FIX v18:
+# - Edge detection en onScanSuccess: el mismo QR ya NO se emite 10 veces/seg.
+# - Cooldown configurable por DNI (default 2500 ms).
+# - Reset del estado al destruir el scanner.
 import streamlit as st
 
 QR_SCANNER_COMPONENT = st.components.v2.component(
-    name="mi_qr_scanner_v17",
+    name="mi_qr_scanner_v18",
     isolate_styles=False,
     html="""
     <div id="qr-wrapper">
@@ -80,6 +85,13 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         const { setTriggerValue } = component;
         let scanner = null;
         let iniciado = false;
+
+        // ============================================================
+        // EDGE DETECTION - evita emitir el mismo DNI multiples veces
+        // ============================================================
+        const COOLDOWN_MS = 2500;   // mismo DNI: no re-emitir antes de 2.5s
+        let ultimoDniEmitido = null;
+        let ultimoTimestampEmision = 0;
 
         // ============================================================
         // MOTOR DE AUDIO
@@ -200,6 +212,9 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                 scanner = null;
             }
             iniciado = false;
+            // Reset edge detection al destruir
+            ultimoDniEmitido = null;
+            ultimoTimestampEmision = 0;
         }
 
         // ============================================================
@@ -248,6 +263,21 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                         const m = texto.match(/\\b(\\d{8})\\b/);
                         if (!m) return;
                         const dni = m[1];
+
+                        // ---- EDGE DETECTION ----
+                        const ahora = Date.now();
+                        const esMismoDni = (dni === ultimoDniEmitido);
+                        const dentroCooldown = (ahora - ultimoTimestampEmision) < COOLDOWN_MS;
+
+                        if (esMismoDni && dentroCooldown) {
+                            // Mismo QR en camara: ignorar silenciosamente.
+                            // No emitir a Python, no repetir sonido.
+                            return;
+                        }
+
+                        ultimoDniEmitido = dni;
+                        ultimoTimestampEmision = ahora;
+
                         setStatus('QR: ' + dni);
                         setTriggerValue("qr_dni", dni);
                     } catch (e) {
@@ -286,34 +316,34 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         // ============================================================
         window.addEventListener('beforeunload', destruirScanner);
 
-        if (window.__qrV17Listo && typeof Html5QrcodeScanner !== 'undefined') {
+        if (window.__qrV18Listo && typeof Html5QrcodeScanner !== 'undefined') {
             iniciarScanner();
             return;
         }
-        if (window.__qrV17Cargando) {
+        if (window.__qrV18Cargando) {
             let n = 0;
             const t = setInterval(() => {
                 n++;
                 if (typeof Html5QrcodeScanner !== 'undefined') {
                     clearInterval(t);
-                    window.__qrV17Listo = true;
-                    window.__qrV17Cargando = false;
+                    window.__qrV18Listo = true;
+                    window.__qrV18Cargando = false;
                     iniciarScanner();
                 } else if (n > 100) {
                     clearInterval(t);
-                    window.__qrV17Cargando = false;
+                    window.__qrV18Cargando = false;
                     setError('Timeout cargando libreria.');
                 }
             }, 100);
             return;
         }
-        window.__qrV17Cargando = true;
+        window.__qrV18Cargando = true;
         const s = document.createElement('script');
         s.src = 'https://unpkg.com/html5-qrcode';
         s.async = true;
         s.onload = () => {
-            window.__qrV17Listo = true;
-            window.__qrV17Cargando = false;
+            window.__qrV18Listo = true;
+            window.__qrV18Cargando = false;
             setTimeout(() => {
                 if (typeof Html5QrcodeScanner === 'undefined') {
                     setError('Libreria cargada pero sin Html5QrcodeScanner.');
@@ -323,7 +353,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             }, 50);
         };
         s.onerror = () => {
-            window.__qrV17Cargando = false;
+            window.__qrV18Cargando = false;
             setError('Error al cargar html5-qrcode del CDN.');
         };
         document.head.appendChild(s);
