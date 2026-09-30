@@ -914,9 +914,12 @@ def _procesar_escaneo(dni):
     })
     st.session_state["_qr_mensajes"] = st.session_state["_qr_mensajes"][:10]
 
-    # Guardar sonido pendiente para disparar en el proximo render
+    # Sonido: contador unico como nonce (garantiza HTML distinto cada vez)
+    contador = st.session_state.get("_qr_sonido_contador", 0) + 1
+    st.session_state["_qr_sonido_contador"] = contador
     st.session_state["_qr_sonido_pendiente"] = {
         "kind": sonido,
+        "nonce": contador,
         "ts": time.time(),
     }
 def _render_mensaje_qr(msg):
@@ -952,29 +955,29 @@ def escaner_qr_continuo(key="qr_scanner"):
     if result is not None and getattr(result, "qr_dni", None):
         dni = result.qr_dni
         ult = st.session_state.get("_ultimo_qr_scan", {})
-        if not (ult.get("dni") == dni and (time.time() - ult.get("ts", 0)) < 3):
+        if not (ult.get("dni") == dni and (time.time() - ult.get("ts", 0)) < 1):
             st.session_state["_ultimo_qr_scan"] = {"dni": dni, "ts": time.time()}
             _procesar_escaneo(dni)
 
     # Disparar sonido pendiente
     sp = st.session_state.get("_qr_sonido_pendiente")
-    if sp and (time.time() - sp.get("ts", 0)) < 5:
+    if sp and (time.time() - sp.get("ts", 0)) < 30:
         kind_js = sp["kind"]
+        nonce = sp["nonce"]
         st.components.v1.html(f"""
             <script>
             (function() {{
+                const NONCE = {nonce};
                 let tries = 0;
                 const disparar = () => {{
                     tries++;
                     try {{
-                        // 1) intentar en el propio iframe padre
                         if (window.parent && typeof window.parent.__qrFeedback === 'function') {{
                             window.parent.__qrFeedback('{kind_js}');
                             return;
                         }}
                     }} catch(e) {{}}
                     try {{
-                        // 2) intentar en otros iframes hermanos
                         const frames = document.querySelectorAll('iframe');
                         for (const f of frames) {{
                             try {{
