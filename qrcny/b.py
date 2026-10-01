@@ -13,7 +13,7 @@ import streamlit as st
 from PIL import Image
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import (Image as RLImage, PageBreak, Paragraph,
                                  SimpleDocTemplate, Spacer, Table, TableStyle)
 
@@ -1364,35 +1364,189 @@ def generar_qr(dni):
     return qr.make_image(fill_color="black", back_color="white").convert("RGB")
 
 def _render_carnets(filas, titulo=None):
-    buf = BytesIO(); m = 8
+    """Fotocheck horizontal 85.6 x 54 mm (tarjeta de credito).
+    QR a la derecha (150x150 pt), datos a la izquierda, escudo arriba."""
+    buf = BytesIO()
+    m = 20  # margen de la hoja
     doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=m, leftMargin=m, topMargin=m, bottomMargin=m)
     est = getSampleStyleSheet()
-    if titulo is None:
-        titulo = ("Carnets - " + filas[0]['grado'] + " " + filas[0]['seccion']) if len(filas) > 1 else ("Carnet - " + filas[0]['apellido_paterno'] + " " + (filas[0]['apellido_materno'] or "") + ", " + filas[0]['nombres'])
-    el = [Paragraph(titulo, est["Heading1"]), Spacer(1, 6)]
-    cols, rows = 3, 3; pp = cols*rows
-    aw = (A4[0]-2*m)/cols; ah = (A4[1]-2*m-50)/rows
-    for i in range(0, len(filas), pp):
-        lote = filas[i:i+pp]; tabla = []
-        for j in range(0, len(lote), cols):
-            fila = []
-            for a in lote[j:j+cols]:
-                qb = BytesIO(); generar_qr(a["dni"]).save(qb, format="PNG"); qb.seek(0)
-                fila.append([Paragraph("<b><font size=11>" + a['apellido_paterno'] + " " + (a['apellido_materno'] or "") + "</font></b>", est["Normal"]),
-                             Paragraph("<font size=10>" + a['nombres'] + "</font>", est["Normal"]),
-                             Paragraph("<font size=10>DNI: " + a['dni'] + "</font>", est["Normal"]),
-                             Paragraph("<font size=9>" + a['grado'] + " " + a['seccion'] + " - " + a['turno'] + "</font>", est["Normal"]),
-                             RLImage(qb, width=150, height=150)])
-            while len(fila) < cols: fila.append([])
-            tabla.append(fila)
-        while len(tabla) < rows: tabla.append([[] for _ in range(cols)])
-        t = Table(tabla, colWidths=[aw]*cols, rowHeights=[ah]*rows)
-        t.setStyle(TableStyle([("ALIGN",(0,0),(-1,-1),"CENTER"),("VALIGN",(0,0),(-1,-1),"MIDDLE"),
-                                ("BOX",(0,0),(-1,-1),1.5,colors.HexColor(C_NARANJA)),
-                                ("INNERGRID",(0,0),(-1,-1),1,colors.grey)]))
+
+    # ---- Estilos de texto ----
+    est_titulo = ParagraphStyle(
+        "carn_titulo", parent=est["Normal"],
+        fontName="Helvetica-Bold", fontSize=8, leading=10,
+        textColor=colors.white,
+    )
+    est_nombre = ParagraphStyle(
+        "carn_nombre", parent=est["Normal"],
+        fontName="Helvetica-Bold", fontSize=8.5, leading=10,
+        textColor=colors.black,
+    )
+    est_dato = ParagraphStyle(
+        "carn_dato", parent=est["Normal"],
+        fontName="Helvetica", fontSize=7.5, leading=9,
+        textColor=colors.black,
+    )
+
+    # ---- Tamaño del fotocheck (85.6 x 54 mm) ----
+    MM = 2.8346
+    ANCHO = 85.6 * MM   # ~242.6 pt
+    ALTO = 54.0 * MM    # ~153.1 pt
+
+    # ---- Escudo (si existe) ----
+    escudo_path = Path("escudo.png")
+    escudo_disponible = escudo_path.exists()
+
+    # ---- Colores ----
+    NARANJA = colors.HexColor(C_NARANJA)
+    GRIS_LINEA = colors.HexColor("#CCCCCC")
+
+    # ---- Generar cada fotocheck como una Table ----
+    def _fotocheck(a):
+        # --- QR (150x150 pt) ---
+        qb = BytesIO()
+        generar_qr(a["dni"]).save(qb, format="PNG")
+        qb.seek(0)
+        qr_img = RLImage(qb, width=150, height=150)
+
+        # --- Columna izquierda: datos ---
+        nombre = (a['apellido_paterno'] + " " + (a['apellido_materno'] or "")).strip()
+        nombres = a['nombres']
+        grado = a['grado']
+        seccion = a['seccion']
+        turno = a['turno']
+
+        texto_izq = []
+        texto_izq.append(Paragraph("<b>" + nombre + "</b>", est_nombre))
+        texto_izq.append(Paragraph(nombres, est_dato))
+        texto_izq.append(Spacer(1, 3))
+        texto_izq.append(Paragraph("<b>" + grado + " " + seccion + "</b>", est_dato))
+        texto_izq.append(Paragraph("Turno " + turno, est_dato))
+
+        # --- Cabecera: escudo + nombre del colegio ---
+        if escudo_disponible:
+            try:
+                escudo_img = RLImage(str(escudo_path), width=22, height=22)
+                cabecera = Table(
+                    [[escudo_img, Paragraph("I.E. YARINACOCHA", est_titulo)]],
+                    colWidths=[26, ANCHO - 26],
+                    rowHeights=[24],
+                )
+                cabecera.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, -1), NARANJA),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("ALIGN", (0, 0), (0, 0), "CENTER"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 2),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+                    ("TOPPADDING", (0, 0), (-1, -1), 0),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                ]))
+            except Exception:
+                cabecera = Table(
+                    [[Paragraph("I.E. YARINACOCHA", est_titulo)]],
+                    colWidths=[ANCHO], rowHeights=[24],
+                )
+                cabecera.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, -1), NARANJA),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ]))
+        else:
+            cabecera = Table(
+                [[Paragraph("I.E. YARINACOCHA", est_titulo)]],
+                colWidths=[ANCHO], rowHeights=[24],
+            )
+            cabecera.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), NARANJA),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ]))
+
+        # --- Cuerpo: datos a la izquierda, QR a la derecha ---
+        cuerpo = Table(
+            [[texto_izq, qr_img]],
+            colWidths=[ANCHO - 154, 154],
+            rowHeights=[ALTO - 24],
+        )
+        cuerpo.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (0, 0), "MIDDLE"),
+            ("VALIGN", (1, 0), (1, 0), "MIDDLE"),
+            ("ALIGN", (1, 0), (1, 0), "CENTER"),
+            ("LEFTPADDING", (0, 0), (0, 0), 6),
+            ("RIGHTPADDING", (0, 0), (0, 0), 2),
+            ("LEFTPADDING", (1, 0), (1, 0), 1),
+            ("RIGHTPADDING", (1, 0), (1, 0), 1),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ]))
+
+        # --- Fotocheck completo: cabecera + cuerpo ---
+        fc = Table(
+            [[cabecera], [cuerpo]],
+            colWidths=[ANCHO],
+            rowHeights=[24, ALTO - 24],
+        )
+        fc.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 1.2, NARANJA),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        return fc
+
+    # --- Armar la hoja: 2 fotochecks por fila ---
+    el = []
+    if titulo:
+        el.append(Paragraph("<b>" + titulo + "</b>", est["Heading2"]))
+        el.append(Spacer(1, 8))
+
+    # Espacio util de la hoja
+    ancho_hoja = A4[0] - 2 * m
+    alto_hoja = A4[1] - 2 * m
+    sep_x = 10   # separacion horizontal entre fotochecks
+    sep_y = 12   # separacion vertical entre filas
+
+    # Cuantos caben por fila (2) y por columna
+    caben_x = 2
+    caben_y = max(1, int((alto_hoja + sep_y) // (ALTO + sep_y)))
+
+    fotochecks = [_fotocheck(a) for a in filas]
+
+    for i in range(0, len(fotochecks), caben_x * caben_y):
+        lote = fotochecks[i:i + caben_x * caben_y]
+        # Armar filas de a 2
+        tabla_filas = []
+        for j in range(0, len(lote), caben_x):
+            fila = lote[j:j + caben_x]
+            while len(fila) < caben_x:
+                fila.append("")
+            tabla_filas.append(fila)
+        # Rellenar filas vacias
+        while len(tabla_filas) < caben_y:
+            tabla_filas.append([""] * caben_x)
+
+        t = Table(
+            tabla_filas,
+            colWidths=[ANCHO, ANCHO],
+            rowHeights=[ALTO] * len(tabla_filas),
+            hAlign="CENTER",
+        )
+        t.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("LEFTPADDING", (0, 0), (-1, -1), sep_x / 2),
+            ("RIGHTPADDING", (0, 0), (-1, -1), sep_x / 2),
+            ("TOPPADDING", (0, 0), (-1, -1), sep_y / 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), sep_y / 2),
+        ]))
         el.append(t)
-        if i+pp < len(filas): el.append(PageBreak())
-    doc.build(el); buf.seek(0); return buf.getvalue()
+        if i + caben_x * caben_y < len(fotochecks):
+            el.append(PageBreak())
+
+    doc.build(el)
+    buf.seek(0)
+    return buf.getvalue()
 
 def _filas_alumnos_por_seccion(idsec):
     con = obtener_conexion()
