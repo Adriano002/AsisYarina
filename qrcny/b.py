@@ -1,16 +1,12 @@
 # asistencia I.E. Yarinacocha
-import hashlib, logging, os, re, secrets, sqlite3, threading, time
+import hashlib, logging, re, secrets, sqlite3, threading, time
 from calendar import monthrange
 from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
-from typing import Optional
-
-import numpy as np
 import pandas as pd
 import qrcode
 import streamlit as st
-from PIL import Image
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -32,10 +28,6 @@ DB_PATH = "asistencia.db"
 MESES_ES = ["","Enero","Febrero","Marzo","Abril","Mayo","Junio",
             "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
 C_NARANJA = "#E65100"; C_NARANJA_H = "#BF360C"
-C_VERDE = "#2E7D32"; C_VERDE_H = "#1B5E20"
-C_VERDE_BG = "#d4edda"; C_VERDE_TX = "#155724"
-C_AMAR_BG = "#fff3cd"; C_AMAR_TX = "#856404"
-C_ROJO_BG = "#f8d7da"; C_ROJO_TX = "#721c24"; C_ROJO_BTN = "#C62828"
 
 PBK_ITER = 260_000; PBK_ALG = "sha256"
 MAX_INTENTOS = 3; MIN_BLOQUEO = 10
@@ -43,11 +35,9 @@ MAX_INTENTOS = 3; MIN_BLOQUEO = 10
 PUNTUAL="Puntual"; TARDANZA="Tardanza"; FALTA="Falta"; PERMISO="Permiso"
 REF_ASISTIO="Asistio"; REF_NO_ASISTIO="No asistio"
 ACC_PERDONADO="PERDONADO"; ACC_DERIVADO="DERIVADO_TOECE"; ACC_RETENIDO="RETENIDO_APODERADO"
-ROLES_VALIDOS=("Admin","TOECE","Auxiliar","Direccion")
 VENT_CLASES="clases"; VENT_REF="reforzamiento"
-TIPO_ASIST_CLASES="clases"; TIPO_ASIST_REF="reforzamiento"; TIPO_ASIST_EVENTO="evento"
-
-JUSTIF_HORAS_DESPUES = 24
+TIPO_ASIST_EVENTO="evento"
+MAX_DIAS_PERMISO = 7
 
 # helpers tiempo
 def ahora(): return datetime.now(timezone.utc) - timedelta(hours=5)
@@ -55,23 +45,8 @@ def hoy_str(): return ahora().strftime("%Y-%m-%d")
 def hora_str(): return ahora().strftime("%H:%M:%S")
 def hora_corta(): return ahora().strftime("%H:%M")
 def timestamp_str(): return ahora().strftime("%Y-%m-%d %H:%M:%S")
-def sumar_minutos(hhmm, mins):
-    return (datetime.strptime(hhmm,"%H:%M")+timedelta(minutes=mins)).strftime("%H:%M")
 def es_fin_de_semana(fecha=None):
     return (fecha or ahora().date()).weekday() >= 5
-def nombre_mes(m):
-    return MESES_ES[m] if 1 <= m <= 12 else ""
-
-def hora_a_minutos(hhmm):
-    if not hhmm: return None
-    try:
-        h, m = hhmm.strip().split(":")
-        return int(h) * 60 + int(m)
-    except (ValueError, AttributeError):
-        return None
-
-def fecha_a_dt(f):
-    return datetime.strptime(f, "%Y-%m-%d").date()
 
 # seguridad
 def hashear_password(password):
@@ -89,12 +64,6 @@ def verificar_password(password, hash_guardado):
         except (ValueError, TypeError): return False
     return secrets.compare_digest(
         hashlib.sha256(password.encode()).hexdigest(), hash_guardado)
-
-def verificar_password_admin(password):
-    con = obtener_conexion()
-    for fila in con.execute("SELECT password FROM usuarios WHERE rol='Admin' AND activo=1").fetchall():
-        if verificar_password(password, fila["password"]): return True
-    return False
 
 def verificar_password_critica(password):
     con = obtener_conexion()
@@ -132,17 +101,6 @@ def escribir(sql, params=()):
         con.commit()
         return cur
 
-def escribir_muchos(sql, lista_params):
-    with _lock_escritura:
-        con = obtener_conexion()
-        cur = con.executemany(sql, lista_params)
-        con.commit()
-        return cur
-
-def leer(sql, params=()):
-    con = obtener_conexion()
-    return con.execute(sql, params)
-
 def existe_columna(cur, tabla, col):
     return any(f["name"] == col for f in cur.execute("PRAGMA table_info(" + tabla + ")").fetchall())
 
@@ -164,11 +122,11 @@ def inicializar_bd():
     CREATE TABLE IF NOT EXISTS actas_compromiso(id INTEGER PRIMARY KEY,alumno_id INTEGER NOT NULL,fecha TEXT NOT NULL,motivo TEXT,observacion TEXT,registrado_por TEXT,timestamp TEXT NOT NULL,periodo_id INTEGER);
     CREATE TABLE IF NOT EXISTS observados(id INTEGER PRIMARY KEY,alumno_id INTEGER NOT NULL,fecha_ingreso TEXT NOT NULL,motivo TEXT,activo INTEGER DEFAULT 1,fecha_salida TEXT,observacion_cierre TEXT,periodo_id INTEGER);
     CREATE TABLE IF NOT EXISTS bloqueos(id INTEGER PRIMARY KEY,alumno_id INTEGER NOT NULL,motivo TEXT,activo INTEGER DEFAULT 1,fecha_inicio TEXT NOT NULL,fecha_fin TEXT,liberado_por TEXT,creado_por TEXT,origen TEXT DEFAULT 'automatico');
-    CREATE TABLE IF NOT EXISTS justificaciones_previas(id INTEGER PRIMARY KEY,alumno_id INTEGER NOT NULL,fecha_objetivo TEXT NOT NULL,tipo TEXT NOT NULL CHECK(tipo IN ('Falta','Tardanza')),motivo TEXT,creado_por TEXT,timestamp TEXT NOT NULL,aplicada INTEGER DEFAULT 0,UNIQUE(alumno_id,fecha_objetivo,tipo));
+    CREATE TABLE IF NOT EXISTS justificaciones_previas(id INTEGER PRIMARY KEY,alumno_id INTEGER NOT NULL,fecha_objetivo TEXT NOT NULL,tipo TEXT NOT NULL CHECK(tipo IN ('Falta','Tardanza')),motivo TEXT,creado_por TEXT,timestamp TEXT NOT NULL,aplicada INTEGER DEFAULT 0,UNIQUE(alumno_id,fecha_objetivo));
     CREATE TABLE IF NOT EXISTS permisos(id INTEGER PRIMARY KEY,alumno_id INTEGER NOT NULL,fecha_inicio TEXT NOT NULL,fecha_fin TEXT NOT NULL,motivo TEXT,tipo TEXT NOT NULL DEFAULT 'permiso',creado_por TEXT,timestamp TEXT NOT NULL,activo INTEGER DEFAULT 1,periodo_id INTEGER);
     CREATE TABLE IF NOT EXISTS dias_especiales(id INTEGER PRIMARY KEY,fecha TEXT NOT NULL,descripcion TEXT,turno_id INTEGER,hora_entrada TEXT,activo INTEGER DEFAULT 1,tipo TEXT DEFAULT 'evento' CHECK(tipo IN ('evento','feriado')),periodo_id INTEGER);
     CREATE TABLE IF NOT EXISTS dias_especiales_secciones(id INTEGER PRIMARY KEY,dia_especial_id INTEGER NOT NULL,seccion_id INTEGER NOT NULL,UNIQUE(dia_especial_id,seccion_id));
-    CREATE TABLE IF NOT EXISTS usuarios(id INTEGER PRIMARY KEY,usuario TEXT UNIQUE NOT NULL,password TEXT NOT NULL,rol TEXT NOT NULL CHECK(rol IN ('Admin','TOECE','Auxiliar','Direccion')),nombres TEXT NOT NULL,turno_asignado INTEGER,activo INTEGER DEFAULT 1,intentos_fallidos INTEGER DEFAULT 0,bloqueado_hasta TEXT,debe_cambiar_password INTEGER DEFAULT 0,ultimo_login TEXT,ultimo_ip TEXT);
+    CREATE TABLE IF NOT EXISTS usuarios(id INTEGER PRIMARY KEY,usuario TEXT UNIQUE NOT NULL,password TEXT NOT NULL,rol TEXT NOT NULL CHECK(rol IN ('Admin','TOECE','Auxiliar','Direccion')),nombres TEXT NOT NULL,turno_asignado INTEGER,activo INTEGER DEFAULT 1,intentos_fallidos INTEGER DEFAULT 0,bloqueado_hasta TEXT,debe_cambiar_password INTEGER DEFAULT 0,ultimo_login TEXT,ultimo_ip TEXT,es_principal INTEGER DEFAULT 0);
     CREATE TABLE IF NOT EXISTS auxiliar_secciones(id INTEGER PRIMARY KEY,usuario_id INTEGER NOT NULL,seccion_id INTEGER NOT NULL UNIQUE);
     CREATE TABLE IF NOT EXISTS auditoria(id INTEGER PRIMARY KEY,usuario TEXT,accion TEXT,fecha TEXT,valor_anterior TEXT,valor_nuevo TEXT,tabla_afectada TEXT,registro_id INTEGER,ip TEXT);
     CREATE TABLE IF NOT EXISTS cierres_anuales(id INTEGER PRIMARY KEY,periodo_id INTEGER NOT NULL,fecha_cierre TEXT NOT NULL,generado_por TEXT,reporte_json TEXT);
@@ -280,12 +238,6 @@ def vista_mantenimiento():
         st.rerun()
 
 # sesion
-def inicializar_sesion():
-    if st.session_state.get("user"): return
-
-def refrescar_sesion_si_necesario():
-    return
-
 def cerrar_sesion():
     usuario = st.session_state.get("user")
     if usuario:
@@ -453,11 +405,6 @@ def secciones_por_turno(idt):
     con = obtener_conexion()
     return [dict(f) for f in con.execute("SELECT s.*,g.nombre AS grado FROM secciones s JOIN grados g ON s.grado_id=g.id WHERE s.turno_id=? ORDER BY g.nombre,s.nombre", (idt,)).fetchall()]
 
-@st.cache_data(ttl=60)
-def listar_todas_secciones():
-    con = obtener_conexion()
-    return [dict(f) for f in con.execute("SELECT s.id,s.nombre AS seccion,g.nombre AS grado,t.nombre AS turno,g.id AS grado_id,t.id AS turno_id FROM secciones s JOIN grados g ON s.grado_id=g.id JOIN turnos t ON s.turno_id=t.id ORDER BY t.nombre,g.nombre,s.nombre").fetchall()]
-
 def alumnos_de_seccion(idsec):
     con = obtener_conexion()
     return pd.read_sql("SELECT a.id,a.dni,a.nombres,a.apellido_paterno,a.apellido_materno,a.apellido_paterno||' '||COALESCE(a.apellido_materno,'')||', '||a.nombres AS nombre_completo FROM alumnos a WHERE a.seccion_id=? AND a.activo=1 ORDER BY a.apellido_paterno,a.apellido_materno,a.nombres",
@@ -478,28 +425,6 @@ def buscar_alumnos(texto, idg=None, idsec=None, limite=200):
     if idg: q += " AND g.id=?"; p.append(idg)
     if idsec: q += " AND s.id=?"; p.append(idsec)
     q += " ORDER BY a.apellido_paterno LIMIT ?"; p.append(limite)
-    return pd.read_sql(q, con, params=p)
-
-def buscar_alumnos_con_estado(texto, limite=15):
-    con = obtener_conexion()
-    hoy = hoy_str()
-    q = """
-        SELECT a.id, a.dni, a.nombres, a.apellido_paterno, a.apellido_materno,
-        g.nombre AS grado, s.nombre AS seccion, t.nombre AS turno,
-        a.apellido_paterno||' '||COALESCE(a.apellido_materno,'')||', '||a.nombres AS nombre_completo,
-        (SELECT estado FROM asistencias WHERE alumno_id=a.id AND fecha=? AND tipo='clases' LIMIT 1) AS estado_hoy,
-        (SELECT hora FROM asistencias WHERE alumno_id=a.id AND fecha=? AND tipo='clases' LIMIT 1) AS hora_hoy
-        FROM alumnos a JOIN secciones s ON a.seccion_id=s.id JOIN grados g ON s.grado_id=g.id
-        JOIN turnos t ON s.turno_id=t.id WHERE a.activo=1
-    """
-    p = [hoy, hoy]
-    if texto:
-        for w in [x.strip() for x in texto.split() if x.strip()]:
-            q += " AND (a.nombres LIKE ? OR a.apellido_paterno LIKE ? OR a.apellido_materno LIKE ? OR a.dni LIKE ?)"
-            pat = "%" + w + "%"
-            p += [pat, pat, pat, pat]
-    q += " ORDER BY a.apellido_paterno LIMIT ?"
-    p.append(limite)
     return pd.read_sql(q, con, params=p)
 
 def _buscar_alumno_por_dni(con, dni):
@@ -523,7 +448,6 @@ def crear_alumno(dni, nombres, ap, am, idsec, apo_n, apo_t, usuario):
                         (dni, nombres, ap, am or None, idsec, ida, apo_n or None, apo_t or None, per["id"]))
             con.commit()
         auditar(usuario["usuario"], "Creo alumno DNI " + dni, tb="alumnos")
-        listar_todas_secciones.clear()
         return True, "Alumno " + nombres + " creado."
     except sqlite3.IntegrityError: return False, "Ya existe un alumno con DNI " + dni
     except sqlite3.Error as e:
@@ -562,25 +486,15 @@ def validar_importacion(df, mapeo):
     errs = []; val = []; con = obtener_conexion(); vistos = {}
 
     def _limpiar(v):
-        """Convierte cualquier valor a string limpio, quitando .0 de floats."""
-        if v is None:
-            return ""
+        if v is None: return ""
         if isinstance(v, float):
-            if pd.isna(v):
-                return ""
-            # Si es entero disfrazado de float (12345678.0 -> "12345678")
-            if v == int(v):
-                return str(int(v))
+            if pd.isna(v): return ""
+            if v == int(v): return str(int(v))
             return str(v)
-        if isinstance(v, int):
-            return str(v)
+        if isinstance(v, int): return str(v)
         s = str(v).strip()
-        # Por si viene como texto "12345678.0"
-        if s.endswith(".0") and s[:-2].isdigit():
-            s = s[:-2]
-        # Si pandas convirtio NaN en "nan"
-        if s.lower() == "nan":
-            return ""
+        if s.endswith(".0") and s[:-2].isdigit(): s = s[:-2]
+        if s.lower() == "nan": return ""
         return s
 
     for idx, fila in df.iterrows():
@@ -658,7 +572,6 @@ def insertar_alumnos_validos(val):
                     ins += 1
             except sqlite3.Error as e: errs.append("Fila " + str(i+1) + ": " + str(e))
         con.commit()
-    listar_todas_secciones.clear()
     return ins, reac, errs
 
 # bloqueos
@@ -707,20 +620,35 @@ def _puede_justificar(fecha_objetivo_str):
         return False, "Fecha invalida."
     hoy = ahora().date()
     diff = (hoy - f_obj).days
-    if diff < 0:
-        return False, "No se puede justificar una asistencia futura."
+    if diff < -1:
+        return False, "Solo se puede justificar hoy o manana."
     if diff > 1:
         return False, "Pasaron mas de 24h. Ya no se puede justificar."
     return True, ""
 
 def crear_justificacion_previa(idal, fecha_obj, tipo, motivo, usuario):
-    return False, "Las justificaciones previas ya no estan disponibles."
+    ok, msg = _puede_justificar(fecha_obj)
+    if not ok: return False, msg
+    if not motivo or not motivo.strip():
+        return False, "El motivo es obligatorio."
+    con = obtener_conexion()
+    ex = con.execute("SELECT id FROM justificaciones_previas WHERE alumno_id=? AND fecha_objetivo=?",
+                     (idal, fecha_obj)).fetchone()
+    if ex:
+        return False, "Ya existe una justificacion para ese alumno en esa fecha."
+    escribir("INSERT INTO justificaciones_previas(alumno_id,fecha_objetivo,tipo,motivo,creado_por,timestamp,aplicada) VALUES(?,?,?,?,?,?,0)",
+             (idal, fecha_obj, tipo, motivo.strip(), usuario["usuario"], timestamp_str()))
+    auditar(usuario["usuario"], "Creo justificacion previa " + tipo + " " + fecha_obj + " id=" + str(idal), tb="justificaciones_previas", rid=idal)
+    return True, "Justificacion registrada."
 
 def crear_permiso(idal, fi, ff, motivo, usuario):
     if ff < fi:
         return False, "La fecha fin no puede ser anterior a la fecha inicio."
     if not motivo or not motivo.strip():
         return False, "El motivo es obligatorio."
+    dias = (ff - fi).days + 1
+    if dias > MAX_DIAS_PERMISO:
+        return False, "El permiso no puede exceder " + str(MAX_DIAS_PERMISO) + " dias."
     per = obtener_periodo_activo(); pid = per["id"] if per else None
     escribir(
         "INSERT INTO permisos(alumno_id,fecha_inicio,fecha_fin,motivo,creado_por,timestamp,activo,periodo_id) "
@@ -848,10 +776,14 @@ def marcar_faltas_al_cierre():
                         (al["id"], fecha, v["id"], tipo, hora_str(), PERMISO, "Permiso otorgado", "manual", pid)
                     )
                     continue
+                # Justificacion previa de Falta
+                jp = False
+                if v["tipo"] == VENT_CLASES:
+                    jp = _aplicar_just_prev(con, al["id"], fecha, "Falta")
                 escribir(
-                    "INSERT INTO asistencias(alumno_id,fecha,ventana_id,tipo,hora,estado,origen,periodo_id) "
-                    "VALUES(?,?,?,?,?,?,?,?)",
-                    (al["id"], fecha, v["id"], tipo, hora_str(), est, "auto", pid)
+                    "INSERT INTO asistencias(alumno_id,fecha,ventana_id,tipo,hora,estado,justificada,origen,periodo_id) "
+                    "VALUES(?,?,?,?,?,?,?,?,?)",
+                    (al["id"], fecha, v["id"], tipo, hora_str(), est, 1 if jp else 0, "auto", pid)
                 )
 
 def justificar_asistencia(ida, obs, usuario):
@@ -890,12 +822,11 @@ def _procesar_escaneo(dni):
     if not u: return
     ok, tipo, msg, extra = registrar_entrada(dni, u, origen="qr")
 
-    # Decidir que sonido debe sonar
     if not ok and tipo == "ERROR":
         if "ya registro" in msg or "ya tiene" in msg:
             sonido = "duplicado"
         elif "DNI no encontrado" in msg:
-            sonido = "error"     # DNI no existe
+            sonido = "error"
         else:
             sonido = "error"
     elif tipo == "BLOQUEADO":
@@ -914,7 +845,6 @@ def _procesar_escaneo(dni):
     })
     st.session_state["_qr_mensajes"] = st.session_state["_qr_mensajes"][:10]
 
-    # Sonido: contador unico como nonce (garantiza HTML distinto cada vez)
     contador = st.session_state.get("_qr_sonido_contador", 0) + 1
     st.session_state["_qr_sonido_contador"] = contador
     st.session_state["_qr_sonido_pendiente"] = {
@@ -922,6 +852,7 @@ def _procesar_escaneo(dni):
         "nonce": contador,
         "ts": time.time(),
     }
+
 def _render_mensaje_qr(msg):
     tipo = msg["tipo"]; mensaje = msg["mensaje"]
     clase = {"PUNTUAL":"qr-puntual","TARDANZA":"qr-tardanza","REFORZAMIENTO":"qr-refuerzo",
@@ -939,6 +870,7 @@ def _render_mensaje_qr(msg):
         mensaje + '</div></div>',
         unsafe_allow_html=True
     )
+
 def escaner_qr_continuo(key="qr_scanner"):
     st.markdown(
         '<div class="scan-header"><div class="scan-titulo">Escaneo QR</div>'
@@ -959,7 +891,6 @@ def escaner_qr_continuo(key="qr_scanner"):
             st.session_state["_ultimo_qr_scan"] = {"dni": dni, "ts": time.time()}
             _procesar_escaneo(dni)
 
-    # Disparar sonido pendiente
     sp = st.session_state.get("_qr_sonido_pendiente")
     if sp and (time.time() - sp.get("ts", 0)) < 30:
         kind_js = sp["kind"]
@@ -1001,6 +932,7 @@ def escaner_qr_continuo(key="qr_scanner"):
         st.markdown('<div class="scan-ultimos">Ultimos escaneos</div>', unsafe_allow_html=True)
         for msg in st.session_state["_qr_mensajes"][:5]:
             _render_mensaje_qr(msg)
+
 # reportes base
 def metricas_dia(fecha, pid=None):
     con = obtener_conexion()
@@ -1085,7 +1017,6 @@ def cierre_mensual_calendario(mes, año, ids_sec, pid=None):
     for r in con.execute(q_asis, p_asis).fetchall():
         key = (r["alumno_id"], r["fecha"])
         est = r["estado"]
-        # Solo P o F. Todo lo que no sea Falta se cuenta como P.
         if est == "Falta":
             asis[key] = "F"
         else:
@@ -1147,36 +1078,35 @@ def obtener_auditoria(limite=500):
     return pd.read_sql("SELECT id,usuario,accion,fecha,ip FROM auditoria ORDER BY id DESC LIMIT " + str(int(limite)),
                        obtener_conexion())
 
-def reporte_general_por_seccion(desde, hasta, pid=None):
+def reporte_general_por_turno(desde, hasta, id_turno, pid=None):
     con = obtener_conexion()
     q = """
-    SELECT t.nombre AS turno, s.id AS seccion_id, g.nombre AS grado, s.nombre AS seccion,
+    SELECT s.id AS seccion_id, g.nombre AS grado, s.nombre AS seccion,
     COALESCE(u.nombres, '(Sin auxiliar)') AS auxiliar,
     SUM(CASE WHEN ast.estado='Puntual' AND ast.tipo='clases' THEN 1 ELSE 0 END) AS puntuales,
-    SUM(CASE WHEN ast.estado='Falta' AND ast.tipo='clases' THEN 1 ELSE 0 END) AS faltas
+    SUM(CASE WHEN ast.estado='Falta' AND ast.tipo='clases' THEN 1 ELSE 0 END) AS faltas,
+    SUM(CASE WHEN ast.estado='Permiso' AND ast.tipo='clases' THEN 1 ELSE 0 END) AS permisos
     FROM secciones s
     JOIN grados g ON s.grado_id=g.id
-    JOIN turnos t ON s.turno_id=t.id
     LEFT JOIN auxiliar_secciones ause ON ause.seccion_id = s.id
     LEFT JOIN usuarios u ON u.id = ause.usuario_id AND u.rol='Auxiliar' AND u.activo=1
     LEFT JOIN asistencias ast ON ast.alumno_id IN (SELECT id FROM alumnos WHERE seccion_id=s.id)
         AND ast.fecha BETWEEN ? AND ?
+    WHERE s.turno_id=?
     """
-    p = [desde.strftime("%Y-%m-%d"), hasta.strftime("%Y-%m-%d")]
+    p = [desde.strftime("%Y-%m-%d"), hasta.strftime("%Y-%m-%d"), id_turno]
     if pid is not None:
         q += " AND ast.periodo_id=?"
         p.append(pid)
     q += """
-    GROUP BY t.nombre, t.id, s.id, g.nombre, s.nombre, auxiliar
-    ORDER BY
-        CASE t.nombre WHEN 'Mañana' THEN 1 WHEN 'Tarde' THEN 2 ELSE 3 END,
-        auxiliar, g.nombre, s.nombre
+    GROUP BY s.id, g.nombre, s.nombre, auxiliar
+    ORDER BY auxiliar, g.nombre, s.nombre
     """
     df = pd.read_sql(q, con, params=p)
     if df.empty:
         return df
-    df["total"] = df["puntuales"] + df["faltas"]
-    return df[["turno", "auxiliar", "grado", "seccion", "puntuales", "faltas", "total"]]
+    df["total"] = df["puntuales"] + df["faltas"] + df["permisos"]
+    return df[["auxiliar", "grado", "seccion", "puntuales", "faltas", "permisos", "total"]]
 
 # perfil
 def perfil_alumno_datos(idal):
@@ -1321,10 +1251,8 @@ def generar_pdf_tabla_ancha(df, titulo, subtitulo=None, fuente_chica=False):
         suma = sum(anchos)
         anchos = [a * ancho_total / suma for a in anchos]
 
-        GRIS_LINEA = colors.HexColor("#CCCCCC")
         GRIS_FILA_ALT = colors.HexColor("#FAFAFA")
 
-        # Fuente segun el reporte
         if fuente_chica:
             fuente_cab = 6
             fuente_fila = 6
@@ -1357,172 +1285,379 @@ def generar_pdf_tabla_ancha(df, titulo, subtitulo=None, fuente_chica=False):
     doc.build(el)
     buf.seek(0)
     return buf.getvalue()
-  
+
 def generar_qr(dni):
     qr = qrcode.QRCode(version=1, box_size=10, border=4)
     qr.add_data(str(dni).strip()); qr.make(fit=True)
     return qr.make_image(fill_color="black", back_color="white").convert("RGB")
 
+def _generar_fondo_fotocheck(ancho_px, alto_px):
+    """Genera el fondo del fotocheck con PIL: franjas curvas verde/naranja/blanco.
+    Estilo I.E.P. Javier Heraud adaptado a verde+naranja+blanco."""
+    from PIL import Image, ImageDraw
+    import math
+
+    img = Image.new("RGB", (ancho_px, alto_px), "white")
+    draw = ImageDraw.Draw(img)
+
+    # Colores institucionales
+    VERDE = (46, 125, 50)       # #2E7D32
+    NARANJA = (230, 81, 0)      # #E65100
+    BLANCO = (255, 255, 255)
+
+    # --- Franja curva superior izquierda (verde) ---
+    # Simula una onda que baja desde arriba-izquierda
+    puntos_verde = [
+        (0, 0),
+        (ancho_px * 0.55, 0),
+        (ancho_px * 0.50, alto_px * 0.18),
+        (ancho_px * 0.35, alto_px * 0.32),
+        (ancho_px * 0.15, alto_px * 0.42),
+        (0, alto_px * 0.45),
+    ]
+    draw.polygon(puntos_verde, fill=VERDE)
+
+    # --- Franja curva naranja (arriba, superpuesta, más pequeña) ---
+    puntos_naranja = [
+        (0, 0),
+        (ancho_px * 0.42, 0),
+        (ancho_px * 0.38, alto_px * 0.14),
+        (ancho_px * 0.25, alto_px * 0.24),
+        (ancho_px * 0.10, alto_px * 0.32),
+        (0, alto_px * 0.34),
+    ]
+    draw.polygon(puntos_naranja, fill=NARANJA)
+
+    # --- Círculo decorativo verde abajo-izquierda ---
+    cx, cy = 0, alto_px
+    r = int(alto_px * 0.30)
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=VERDE)
+
+    # --- Círculo naranja pequeño abajo-izquierda (superpuesto) ---
+    r2 = int(alto_px * 0.16)
+    draw.ellipse([cx - r2, cy - r2, cx + r2, cy + r2], fill=NARANJA)
+
+    # --- Líneas diagonales finas naranjas arriba-derecha ---
+    for i in range(5):
+        offset = i * 10
+        draw.line(
+            [(ancho_px * 0.62 + offset, 0), (ancho_px * 0.85 + offset, alto_px * 0.20)],
+            fill=NARANJA, width=2
+        )
+    for i in range(4):
+        offset = i * 10
+        draw.line(
+            [(ancho_px * 0.72 + offset, 0), (ancho_px * 0.95 + offset, alto_px * 0.15)],
+            fill=VERDE, width=2
+        )
+
+    return img
+
+
+def _generar_fotocheck_pil(alumno, escudo_path=None):
+    from PIL import Image, ImageDraw, ImageFont
+    import qrcode
+    from datetime import datetime
+
+    ANCHO_PX = 817
+    ALTO_PX = 550
+
+    # --- Colores balanceados (ni muy fuertes ni muy tenues) ---
+    NARANJA_OSCURO = (225, 150, 90)
+    NARANJA_CLARO = (240, 175, 115)
+    NARANJA_FRANJA = (220, 140, 80)
+    FONDO_ANARANJADO = (255, 230, 200)
+    BLANCO = (255, 255, 255)
+    NEGRO = (17, 17, 17)
+    GRIS_LABEL = (90, 60, 30)
+    GRIS_FOTO = (240, 240, 240)
+    GRIS_TXT = (150, 150, 150)
+
+    # ============================================================
+    # FONDO DERECHO + PATRON DE PUNTOS (balanceado)
+    # ============================================================
+    img = Image.new("RGB", (ANCHO_PX, ALTO_PX), FONDO_ANARANJADO)
+    draw = ImageDraw.Draw(img)
+
+    color_punto = (235, 210, 180)   # punto medio
+    paso_puntos = 22
+    radio_punto = 1
+    for py in range(0, ALTO_PX, paso_puntos):
+        for px in range(0, ANCHO_PX, paso_puntos):
+            draw.ellipse(
+                [px - radio_punto, py - radio_punto, px + radio_punto, py + radio_punto],
+                fill=color_punto
+            )
+
+    # ============================================================
+    # ESCUDO MARCA DE AGUA - 15% (balanceado)
+    # ============================================================
+    if escudo_path and Path(escudo_path).exists():
+        try:
+            escudo_wm = Image.open(str(escudo_path)).convert("RGBA")
+            wm_size = 280
+            escudo_wm = escudo_wm.resize((wm_size, wm_size), Image.LANCZOS)
+            alpha = escudo_wm.split()[3]
+            alpha = alpha.point(lambda p: int(p * 0.15))   # 15% (balanceado)
+            escudo_wm.putalpha(alpha)
+            wm_x = (ANCHO_PX - wm_size) // 2 + 100
+            wm_y = (ALTO_PX - wm_size) // 2
+            img.paste(escudo_wm, (wm_x, wm_y), escudo_wm)
+        except Exception:
+            pass
+
+    # ============================================================
+    # FRANJA IZQUIERDA CON DEGRADADO (balanceado)
+    # ============================================================
+    FOTO_W = 216
+    FOTO_H = 280
+    FRANJA_W = FOTO_W
+
+    for y in range(ALTO_PX):
+        t = y / ALTO_PX
+        r = int(NARANJA_OSCURO[0] + (NARANJA_CLARO[0] - NARANJA_OSCURO[0]) * t)
+        g = int(NARANJA_OSCURO[1] + (NARANJA_CLARO[1] - NARANJA_OSCURO[1]) * t)
+        b = int(NARANJA_OSCURO[2] + (NARANJA_CLARO[2] - NARANJA_OSCURO[2]) * t)
+        draw.line([(0, y), (FRANJA_W, y)], fill=(r, g, b))
+
+    # ============================================================
+    # FUENTES
+    # ============================================================
+    def _font(size, bold=False, italic=False):
+        nombres = []
+        if bold and italic:
+            nombres = ["arialbi.ttf", "Arial_Bold_Italic.ttf", "DejaVuSans-BoldOblique.ttf"]
+        elif bold:
+            nombres = ["arialbd.ttf", "Arial_Bold.ttf", "DejaVuSans-Bold.ttf", "Helvetica-Bold"]
+        elif italic:
+            nombres = ["ariali.ttf", "Arial_Italic.ttf", "DejaVuSans-Oblique.ttf"]
+        else:
+            nombres = ["arial.ttf", "Arial.ttf", "DejaVuSans.ttf", "Helvetica"]
+        for n in nombres:
+            try:
+                return ImageFont.truetype(n, size)
+            except Exception:
+                continue
+        return ImageFont.load_default()
+
+    f_colegio = _font(13, bold=True)
+    f_foto = _font(14, bold=True)
+    f_titulo = _font(20, bold=True)
+    f_frase = _font(19, bold=True, italic=True)
+    f_label = _font(20, bold=True)
+
+    # ============================================================
+    # ESCUDO EN LA FRANJA - CENTRADO
+    # ============================================================
+    escudo_size = 80
+    escudo_x = (FRANJA_W - escudo_size) // 2
+    espacio_disponible = ALTO_PX - FOTO_H
+    alto_bloque_escudo = escudo_size + 70
+    escudo_y = (espacio_disponible - alto_bloque_escudo) // 2 + 10
+    if escudo_y < 8:
+        escudo_y = 8
+
+    if escudo_path and Path(escudo_path).exists():
+        try:
+            escudo = Image.open(str(escudo_path)).convert("RGBA")
+            escudo = escudo.resize((escudo_size, escudo_size), Image.LANCZOS)
+            img.paste(escudo, (escudo_x, escudo_y), escudo)
+        except Exception:
+            pass
+
+    # ============================================================
+    # TEXTO "INSTITUCIÓN EDUCATIVA YARINACOCHA"
+    # ============================================================
+    def _texto_centrado_franja(texto, y, font, color):
+        try:
+            bbox = draw.textbbox((0, 0), texto, font=font)
+            tw = bbox[2] - bbox[0]
+        except Exception:
+            tw = len(texto) * 7
+        x = (FRANJA_W - tw) // 2
+        draw.text((x, y), texto, fill=color, font=font)
+
+    y_txt = escudo_y + escudo_size + 6
+    _texto_centrado_franja("INSTITUCIÓN", y_txt, f_colegio, BLANCO)
+    y_txt += 14
+    _texto_centrado_franja("EDUCATIVA", y_txt, f_colegio, BLANCO)
+    y_txt += 14
+    _texto_centrado_franja("YARINACOCHA", y_txt, f_colegio, BLANCO)
+
+    # ============================================================
+    # FOTO con borde bien pequenito
+    # ============================================================
+    foto_x = 0
+    foto_y = ALTO_PX - FOTO_H
+    draw.rectangle([foto_x, foto_y, foto_x + FOTO_W, foto_y + FOTO_H], fill=BLANCO)
+    draw.rectangle(
+        [foto_x, foto_y, foto_x + FOTO_W - 1, foto_y + FOTO_H - 1],
+        outline=NARANJA_FRANJA, width=1
+    )
+
+    texto_foto = "FOTO"
+    try:
+        bbox = draw.textbbox((0, 0), texto_foto, font=f_foto)
+        tw = bbox[2] - bbox[0]
+        th = bbox[3] - bbox[1]
+    except Exception:
+        tw = 40
+        th = 12
+    draw.text(
+        (foto_x + (FOTO_W - tw) // 2, foto_y + (FOTO_H - th) // 2),
+        texto_foto, fill=GRIS_TXT, font=f_foto
+    )
+
+    # ============================================================
+    # LADO DERECHO
+    # ============================================================
+    DER_X = FRANJA_W + 14
+
+    titulo_txt = "FOTOCHECK DEL ESTUDIANTE"
+    try:
+        bbox = draw.textbbox((0, 0), titulo_txt, font=f_titulo)
+        tw = bbox[2] - bbox[0]
+    except Exception:
+        tw = 280
+    espacio_derecho = ANCHO_PX - DER_X
+    titulo_x = DER_X + (espacio_derecho - tw) // 2
+    draw.text((titulo_x, 12), titulo_txt, fill=NEGRO, font=f_titulo)
+
+    # --- Info ---
+    apellidos_p = alumno['apellido_paterno'].upper()
+    apellidos_m = (alumno['apellido_materno'] or "").upper()
+    nombres = alumno['nombres'].upper()
+    dni = alumno["dni"]
+    grado = alumno['grado'].upper()
+    seccion = alumno['seccion'].upper()
+    turno = alumno['turno'].upper()
+    anio = str(datetime.now().year)
+
+    info_x = DER_X
+    QR_SIZE = 215
+    qr_x = ANCHO_PX - QR_SIZE - 12
+    ancho_info = qr_x - info_x - 12
+
+    def _ajustar(texto, size_inicial, max_ancho, bold):
+        size = size_inicial
+        while size > 10:
+            f = _font(size, bold=bold)
+            try:
+                ancho = draw.textlength(texto, font=f)
+            except Exception:
+                ancho = len(texto) * size * 0.55
+            if ancho <= max_ancho:
+                return f
+            size -= 1
+        return _font(10, bold=bold)
+
+    INFO_Y = 130
+    alto_linea = 52
+
+    apellidos_full = apellidos_p + " " + apellidos_m
+    f_ap = _ajustar(apellidos_full, 32, ancho_info, True)
+    draw.text((info_x, INFO_Y), apellidos_full, fill=NEGRO, font=f_ap)
+
+    y2 = INFO_Y + alto_linea
+    f_no = _ajustar(nombres, 32, ancho_info, True)
+    draw.text((info_x, y2), nombres, fill=NEGRO, font=f_no)
+
+    y3 = y2 + alto_linea
+    draw.text((info_x, y3), "DNI:", fill=GRIS_LABEL, font=f_label)
+    etiqueta_ancho = draw.textlength("DNI:", font=f_label)
+    valor_x = info_x + int(etiqueta_ancho) + 10
+    f_v = _ajustar(dni, 28, ancho_info - int(etiqueta_ancho) - 10, True)
+    draw.text((valor_x, y3), dni, fill=NEGRO, font=f_v)
+
+    y4 = y3 + alto_linea
+    draw.text((info_x, y4), "GRADO:", fill=GRIS_LABEL, font=f_label)
+    etiqueta_ancho = draw.textlength("GRADO:", font=f_label)
+    valor_x = info_x + int(etiqueta_ancho) + 10
+    valor_grado = grado + " \"" + seccion + "\""
+    f_v = _ajustar(valor_grado, 28, ancho_info - int(etiqueta_ancho) - 10, True)
+    draw.text((valor_x, y4), valor_grado, fill=NEGRO, font=f_v)
+
+    y5 = y4 + alto_linea
+    draw.text((info_x, y5), "TURNO:", fill=GRIS_LABEL, font=f_label)
+    etiqueta_ancho = draw.textlength("TURNO:", font=f_label)
+    valor_x = info_x + int(etiqueta_ancho) + 10
+    f_v = _ajustar(turno, 28, ancho_info - int(etiqueta_ancho) - 10, True)
+    draw.text((valor_x, y5), turno, fill=NEGRO, font=f_v)
+
+    y6 = y5 + alto_linea
+    draw.text((info_x, y6), "AÑO:", fill=GRIS_LABEL, font=f_label)
+    etiqueta_ancho = draw.textlength("AÑO:", font=f_label)
+    valor_x = info_x + int(etiqueta_ancho) + 10
+    f_v = _ajustar(anio, 28, ancho_info - int(etiqueta_ancho) - 10, True)
+    draw.text((valor_x, y6), anio, fill=NEGRO, font=f_v)
+
+    # ============================================================
+    # QR
+    # ============================================================
+    qr_y = 60
+
+    qr = qrcode.QRCode(version=1, box_size=10, border=1)
+    qr.add_data(str(alumno["dni"]).strip())
+    qr.make(fit=True)
+    qr_img_pil = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+    qr_img_pil = qr_img_pil.resize((QR_SIZE, QR_SIZE), Image.LANCZOS)
+    img.paste(qr_img_pil, (qr_x, qr_y))
+
+    # ============================================================
+    # FRASE
+    # ============================================================
+    frase = "\"Ser del CNY, es ser mejor\""
+    try:
+        bbox = draw.textbbox((0, 0), frase, font=f_frase)
+        fw = bbox[2] - bbox[0]
+    except Exception:
+        fw = 250
+    frase_x = DER_X + (espacio_derecho - fw) // 2
+    frase_y = ALTO_PX - 42
+    draw.text((frase_x, frase_y), frase, fill=NARANJA_FRANJA, font=f_frase)
+
+    return img
 def _render_carnets(filas, titulo=None):
-    """Fotocheck horizontal 85.6 x 54 mm (tarjeta de credito).
-    QR a la derecha (150x150 pt), datos a la izquierda, escudo arriba."""
+    """Fotocheck con medidas reales 8.5 cm x 5 cm."""
     buf = BytesIO()
-    m = 20  # margen de la hoja
+    m = 5
     doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=m, leftMargin=m, topMargin=m, bottomMargin=m)
     est = getSampleStyleSheet()
 
-    # ---- Estilos de texto ----
-    est_titulo = ParagraphStyle(
-        "carn_titulo", parent=est["Normal"],
-        fontName="Helvetica-Bold", fontSize=8, leading=10,
-        textColor=colors.white,
-    )
-    est_nombre = ParagraphStyle(
-        "carn_nombre", parent=est["Normal"],
-        fontName="Helvetica-Bold", fontSize=8.5, leading=10,
-        textColor=colors.black,
-    )
-    est_dato = ParagraphStyle(
-        "carn_dato", parent=est["Normal"],
-        fontName="Helvetica", fontSize=7.5, leading=9,
-        textColor=colors.black,
-    )
-
-    # ---- Tamaño del fotocheck (85.6 x 54 mm) ----
     MM = 2.8346
-    ANCHO = 85.6 * MM   # ~242.6 pt
-    ALTO = 54.0 * MM    # ~153.1 pt
+    ANCHO = 85.0 * MM   # 8.5 cm
+    ALTO = 50.0 * MM    # 5.0 cm
 
-    # ---- Escudo (si existe) ----
     escudo_path = Path("escudo.png")
-    escudo_disponible = escudo_path.exists()
 
-    # ---- Colores ----
-    NARANJA = colors.HexColor(C_NARANJA)
-    GRIS_LINEA = colors.HexColor("#CCCCCC")
+    def _fotocheck(alumno):
+        img = _generar_fotocheck_pil(alumno, escudo_path if escudo_path.exists() else None)
+        ib = BytesIO()
+        img.save(ib, format="PNG")
+        ib.seek(0)
+        return RLImage(ib, width=ANCHO, height=ALTO)
 
-    # ---- Generar cada fotocheck como una Table ----
-    def _fotocheck(a):
-        # --- QR (150x150 pt) ---
-        qb = BytesIO()
-        generar_qr(a["dni"]).save(qb, format="PNG")
-        qb.seek(0)
-        qr_img = RLImage(qb, width=150, height=150)
-
-        # --- Columna izquierda: datos ---
-        nombre = (a['apellido_paterno'] + " " + (a['apellido_materno'] or "")).strip()
-        nombres = a['nombres']
-        grado = a['grado']
-        seccion = a['seccion']
-        turno = a['turno']
-
-        texto_izq = []
-        texto_izq.append(Paragraph("<b>" + nombre + "</b>", est_nombre))
-        texto_izq.append(Paragraph(nombres, est_dato))
-        texto_izq.append(Spacer(1, 3))
-        texto_izq.append(Paragraph("<b>" + grado + " " + seccion + "</b>", est_dato))
-        texto_izq.append(Paragraph("Turno " + turno, est_dato))
-
-        # --- Cabecera: escudo + nombre del colegio ---
-        if escudo_disponible:
-            try:
-                escudo_img = RLImage(str(escudo_path), width=22, height=22)
-                cabecera = Table(
-                    [[escudo_img, Paragraph("I.E. YARINACOCHA", est_titulo)]],
-                    colWidths=[26, ANCHO - 26],
-                    rowHeights=[24],
-                )
-                cabecera.setStyle(TableStyle([
-                    ("BACKGROUND", (0, 0), (-1, -1), NARANJA),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ("ALIGN", (0, 0), (0, 0), "CENTER"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 2),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 2),
-                    ("TOPPADDING", (0, 0), (-1, -1), 0),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-                ]))
-            except Exception:
-                cabecera = Table(
-                    [[Paragraph("I.E. YARINACOCHA", est_titulo)]],
-                    colWidths=[ANCHO], rowHeights=[24],
-                )
-                cabecera.setStyle(TableStyle([
-                    ("BACKGROUND", (0, 0), (-1, -1), NARANJA),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
-                ]))
-        else:
-            cabecera = Table(
-                [[Paragraph("I.E. YARINACOCHA", est_titulo)]],
-                colWidths=[ANCHO], rowHeights=[24],
-            )
-            cabecera.setStyle(TableStyle([
-                ("BACKGROUND", (0, 0), (-1, -1), NARANJA),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 4),
-            ]))
-
-        # --- Cuerpo: datos a la izquierda, QR a la derecha ---
-        cuerpo = Table(
-            [[texto_izq, qr_img]],
-            colWidths=[ANCHO - 154, 154],
-            rowHeights=[ALTO - 24],
-        )
-        cuerpo.setStyle(TableStyle([
-            ("VALIGN", (0, 0), (0, 0), "MIDDLE"),
-            ("VALIGN", (1, 0), (1, 0), "MIDDLE"),
-            ("ALIGN", (1, 0), (1, 0), "CENTER"),
-            ("LEFTPADDING", (0, 0), (0, 0), 6),
-            ("RIGHTPADDING", (0, 0), (0, 0), 2),
-            ("LEFTPADDING", (1, 0), (1, 0), 1),
-            ("RIGHTPADDING", (1, 0), (1, 0), 1),
-            ("TOPPADDING", (0, 0), (-1, -1), 2),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-        ]))
-
-        # --- Fotocheck completo: cabecera + cuerpo ---
-        fc = Table(
-            [[cabecera], [cuerpo]],
-            colWidths=[ANCHO],
-            rowHeights=[24, ALTO - 24],
-        )
-        fc.setStyle(TableStyle([
-            ("BOX", (0, 0), (-1, -1), 1.2, NARANJA),
-            ("LEFTPADDING", (0, 0), (-1, -1), 0),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-            ("TOPPADDING", (0, 0), (-1, -1), 0),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-        ]))
-        return fc
-
-    # --- Armar la hoja: 2 fotochecks por fila ---
     el = []
     if titulo:
         el.append(Paragraph("<b>" + titulo + "</b>", est["Heading2"]))
-        el.append(Spacer(1, 8))
+        el.append(Spacer(1, 6))
 
-    # Espacio util de la hoja
-    ancho_hoja = A4[0] - 2 * m
-    alto_hoja = A4[1] - 2 * m
-    sep_x = 10   # separacion horizontal entre fotochecks
-    sep_y = 12   # separacion vertical entre filas
-
-    # Cuantos caben por fila (2) y por columna
+    sep_x = 6
+    sep_y = 10
     caben_x = 2
+    alto_hoja = A4[1] - 2 * m
     caben_y = max(1, int((alto_hoja + sep_y) // (ALTO + sep_y)))
 
     fotochecks = [_fotocheck(a) for a in filas]
 
     for i in range(0, len(fotochecks), caben_x * caben_y):
         lote = fotochecks[i:i + caben_x * caben_y]
-        # Armar filas de a 2
         tabla_filas = []
         for j in range(0, len(lote), caben_x):
             fila = lote[j:j + caben_x]
             while len(fila) < caben_x:
                 fila.append("")
             tabla_filas.append(fila)
-        # Rellenar filas vacias
         while len(tabla_filas) < caben_y:
             tabla_filas.append([""] * caben_x)
 
@@ -1547,7 +1682,6 @@ def _render_carnets(filas, titulo=None):
     doc.build(el)
     buf.seek(0)
     return buf.getvalue()
-
 def _filas_alumnos_por_seccion(idsec):
     con = obtener_conexion()
     return con.execute("SELECT a.*,s.nombre AS seccion,g.nombre AS grado,t.nombre AS turno FROM alumnos a JOIN secciones s ON a.seccion_id=s.id JOIN grados g ON s.grado_id=g.id JOIN turnos t ON s.turno_id=t.id WHERE a.seccion_id=? AND a.activo=1 ORDER BY a.apellido_paterno,a.apellido_materno",
@@ -1754,6 +1888,16 @@ def aplicar_estilos():
         border-radius: 8px; overflow: hidden;
         border: 1px solid rgba(128, 128, 128, 0.3);
     }
+    /* Boton seleccionado (carnets): color naranja */
+    .btn-sel .stButton > button {
+        background: #E65100 !important;
+        border-color: #E65100 !important;
+        color: #FFFFFF !important;
+    }
+    .btn-sel .stButton > button:hover {
+        background: #BF360C !important;
+        border-color: #BF360C !important;
+    }
     hr { border: none; height: 1px; background: rgba(128, 128, 128, 0.3); margin: 20px 0; }
     @media (max-width: 768px) {
         h1 { font-size: 1.4rem !important; }
@@ -1895,36 +2039,6 @@ def vista_mi_cuenta():
         st.rerun()
 
 # puerta
-def _puerta_bienvenida(usuario, fecha):
-    con = obtener_conexion()
-    esp = con.execute("SELECT descripcion, hora_entrada, tipo FROM dias_especiales WHERE fecha=? AND activo=1 LIMIT 1", (fecha,)).fetchone()
-    st.markdown("""
-    <div style="text-align:center; margin-top:50px;">
-        <h2 style="font-size:26px; margin-top:10px;">Bienvenido</h2>
-        <p style="font-size:15px; opacity:0.7; margin-top:16px;">
-            Cuando llegue un alumno, cambia a <b>Escanear QR</b> para activar la camara.
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
-    st.markdown("---")
-    if esp and esp["tipo"] == "evento":
-        st.success("Evento escolar: " + esp['descripcion'] + " (entrada " + esp['hora_entrada'] + ")")
-    elif esp and esp["tipo"] == "feriado":
-        st.info("Feriado / sin clases: " + esp['descripcion'] + ".")
-    elif es_fin_de_semana():
-        st.warning("Hoy no es dia laboral. No se toma asistencia.")
-    else:
-        ha = hora_corta()
-        va = []
-        for t in listar_turnos():
-            for v in listar_ventanas(t["id"]):
-                if v["hora_apertura"] <= ha <= v["hora_cierre"]:
-                    va.append(t['nombre'] + ": " + v['nombre'])
-        if va:
-            st.markdown("<div style='background:#FFF3E0; padding:10px 16px; border-radius:8px; border-left:3px solid #E65100; font-weight:600; color:#E65100;'><b>Ventanas activas:</b> " + " | ".join(va) + "</div>", unsafe_allow_html=True)
-        else:
-            st.info("No hay ventanas activas en este momento.")
-
 def _puerta_escanear(usuario, fecha):
     con = obtener_conexion()
     esp = con.execute("SELECT descripcion, hora_entrada, tipo FROM dias_especiales WHERE fecha=? AND activo=1 LIMIT 1", (fecha,)).fetchone()
@@ -2041,18 +2155,16 @@ def vista_puerta():
     </div>
     """, unsafe_allow_html=True)
     if "puerta_modo" not in st.session_state:
-        st.session_state["puerta_modo"] = "Bienvenida"
-    modo = st.radio("Modo", ["Bienvenida", "Escanear QR", "Manual"], key="puerta_modo", horizontal=True, label_visibility="collapsed")
-    if modo == "Bienvenida":
-        _puerta_bienvenida(usuario, fecha)
-    elif modo == "Escanear QR":
+        st.session_state["puerta_modo"] = "Escanear QR"
+    modo = st.radio("Modo", ["Escanear QR", "Manual"], key="puerta_modo", horizontal=True, label_visibility="collapsed")
+    if modo == "Escanear QR":
         _puerta_escanear(usuario, fecha)
     else:
         _puerta_manual(usuario, fecha)
 
 # toece
 def _toece_justificar_permiso(usuario):
-    st.caption("Justificar: solo Faltas o Tardanzas, hasta 24h despues. Permisos: cualquier dia.")
+    st.caption("Justificar: solo Faltas o Tardanzas. Hasta 24h antes o 24h despues. Permisos: hasta 7 dias.")
     sub_tabs = st.tabs(["Justificar asistencia", "Crear permiso", "Listar permisos"])
     with sub_tabs[0]:
         idg, ids, texto = filtros_grado_seccion_nombre("jp_just")
@@ -2066,7 +2178,7 @@ def _toece_justificar_permiso(usuario):
             df_as = pd.read_sql(
                 "SELECT id, fecha, tipo, estado FROM asistencias "
                 "WHERE alumno_id=? AND justificada=0 AND estado IN ('Falta','Tardanza') "
-                "AND fecha >= date('now','-1 day') ORDER BY fecha DESC",
+                "AND fecha >= date('now','-1 day') AND fecha <= date('now','+1 day') ORDER BY fecha DESC",
                 con, params=[ops[sel]]
             )
             if df_as.empty:
@@ -2100,6 +2212,7 @@ def _toece_justificar_permiso(usuario):
                 sel = st.selectbox("Alumno", list(ops.keys()))
                 fi = st.date_input("Fecha inicio", value=ahora().date())
                 ff = st.date_input("Fecha fin", value=ahora().date())
+                st.caption("Maximo " + str(MAX_DIAS_PERMISO) + " dias.")
                 mot = st.text_input("Motivo del permiso (obligatorio)")
                 pwd = st.text_input("Contrasena de Admin o TOECE", type="password")
                 sub = st.form_submit_button("Registrar permiso", type="primary")
@@ -2211,10 +2324,15 @@ def vista_toece():
                 elif not verificar_password_critica(pwd):
                     st.error("Contrasena incorrecta.")
                 else:
+                    # Cerrar observado: reiniciar contador de tardanzas a 0
+                    id_obs = ops_c[sel_c]
+                    row = obtener_conexion().execute("SELECT alumno_id FROM observados WHERE id=?", (id_obs,)).fetchone()
+                    if row:
+                        escribir("DELETE FROM tardanzas WHERE alumno_id=?", (row["alumno_id"],))
                     escribir("UPDATE observados SET activo=0,fecha_salida=?,observacion_cierre=? WHERE id=?",
-                                (timestamp_str(), obs_c, ops_c[sel_c]))
-                    auditar(usuario["usuario"], "Cerro observado id=" + str(ops_c[sel_c]))
-                    st.toast("Observado cerrado"); st.rerun()
+                                (timestamp_str(), obs_c, id_obs))
+                    auditar(usuario["usuario"], "Cerro observado id=" + str(id_obs) + " (contador reiniciado)")
+                    st.toast("Observado cerrado. Contador reiniciado."); st.rerun()
     with tabs[3]:
         st.subheader("Firmar acta de compromiso")
         df = casos_toece()
@@ -2234,10 +2352,23 @@ def vista_toece():
                 elif not verificar_password_critica(pwd):
                     st.error("Contrasena incorrecta.")
                 else:
+                    idal = ops[sel]
                     escribir("INSERT INTO actas_compromiso(alumno_id,fecha,motivo,observacion,registrado_por,timestamp) VALUES(?,?,?,?,?,?)",
-                                (ops[sel], hoy_str(), mot, obs, usuario["usuario"], timestamp_str()))
-                    auditar(usuario["usuario"], "Firmo acta alumno_id=" + str(ops[sel]))
-                    st.toast("Acta registrada"); st.rerun()
+                                (idal, hoy_str(), mot, obs, usuario["usuario"], timestamp_str()))
+                    # Firmar acta: reiniciar contador (deja 3 tardanzas para que la 4ta bloquee)
+                    escribir("DELETE FROM tardanzas WHERE alumno_id=? AND justificada=0", (idal,))
+                    # Insertar 3 tardanzas ficticias justificadas para que el contador quede en 3
+                    for i in range(3):
+                        try:
+                            escribir("INSERT INTO tardanzas(alumno_id,fecha,hora,numero,accion,justificada,origen,registrado_por,timestamp,periodo_id) "
+                                     "VALUES(?,?,?,?,?,1,'reset_acta',?,?,?)",
+                                     (idal, hoy_str(), hora_str(), i+1, ACC_PERDONADO, usuario["usuario"], timestamp_str(), obtener_periodo_activo()["id"] if obtener_periodo_activo() else None))
+                        except sqlite3.IntegrityError:
+                            pass
+                    # Desbloquear
+                    liberar_bloqueo(idal, usuario, "Acta firmada")
+                    auditar(usuario["usuario"], "Firmo acta y reinicio contador a 3 alumno_id=" + str(idal))
+                    st.toast("Acta registrada. Contador reiniciado (1 oportunidad)."); st.rerun()
     with tabs[4]:
         _toece_justificar_permiso(usuario)
 
@@ -2286,7 +2417,7 @@ def vista_panel_direccion():
     if dfp.empty: st.info("Sin permisos vigentes hoy.")
     else: st.dataframe(dfp, width='stretch')
 
-# REPORTES CON BOTONES
+# REPORTES
 def _rep_pantalla_tipos(idsec):
     con = obtener_conexion()
     sec = con.execute("""
@@ -2378,6 +2509,7 @@ def _rep_mostrar_reporte(idsec, tipo, desde, hasta):
                 st.download_button("Excel", df_a_xlsx(df), "Mensual_" + sec['grado'] + sec['seccion'] + ".xlsx", key="rep_dl_men_x")
             with c2:
                 st.download_button("PDF", generar_pdf_tabla_ancha(df, "Cierre mensual - " + sec['grado'] + " " + sec['seccion'] + " - Turno " + sec['turno'], fuente_chica=True), "Mensual_" + sec['grado'] + sec['seccion'] + ".pdf", "application/pdf", key="rep_dl_men_p")
+
 def _mostrar_reporte_agrupado(df, sec, titulo):
     if df.empty:
         st.info("Sin registros en este rango.")
@@ -2405,27 +2537,86 @@ def _mostrar_reporte_agrupado(df, sec, titulo):
     with c2:
         st.download_button("PDF", generar_pdf_tabla(df, titulo + " - " + sec['grado'] + " " + sec['seccion']), titulo + "_" + sec['grado'] + sec['seccion'] + ".pdf", "application/pdf", key="rep_dl_pdf_" + titulo)
 
-def _rep_descarga_directa(idsec):
-    st.session_state["rep_idsec"] = idsec
-    st.rerun()
+def _rep_seleccionar_seccion(usuario):
+    """Flujo grados -> secciones para reportes por seccion."""
+    con = obtener_conexion()
+    rol = usuario["rol"]
+    permitidas = None
+    if rol == "Auxiliar":
+        permitidas = [f["seccion_id"] for f in con.execute(
+            "SELECT seccion_id FROM auxiliar_secciones WHERE usuario_id=?",
+            (usuario["id"],)).fetchall()]
+        if not permitidas:
+            st.info("No tienes secciones asignadas. Contacta al Admin.")
+            return
+    # Grados que tienen al menos una seccion visible
+    grados = listar_grados()
+    grados_mostrar = []
+    for g in grados:
+        secs = secciones_por_grado(g["id"])
+        if permitidas is not None:
+            secs = [s for s in secs if s["id"] in permitidas]
+        if secs:
+            grados_mostrar.append({"grado": g, "n": len(secs)})
+    if not grados_mostrar:
+        st.info("No hay secciones disponibles.")
+        return
+    idg = st.session_state.get("rep_grado_sel")
+    if idg:
+        g = next((x for x in grados if x["id"] == idg), None)
+        if not g:
+            st.session_state.pop("rep_grado_sel", None)
+            st.rerun()
+            return
+        if st.button("Regresar a grados", key="rep_volver_g"):
+            st.session_state.pop("rep_grado_sel", None)
+            st.rerun()
+        st.subheader("Secciones de " + g["nombre"])
+        secs = secciones_por_grado(g["id"])
+        if permitidas is not None:
+            secs = [s for s in secs if s["id"] in permitidas]
+        if not secs:
+            st.info("No hay secciones visibles para este grado.")
+            return
+        cols = st.columns(3)
+        for i, s in enumerate(secs):
+            with cols[i % 3]:
+                n = len(alumnos_de_seccion(s["id"]))
+                if st.button(s["nombre"] + "  (" + str(n) + " alumnos)", width='stretch', key="rep_s_" + str(s["id"])):
+                    st.session_state["rep_idsec"] = s["id"]
+                    st.rerun()
+        return
+    st.markdown("### Elige el grado")
+    cols = st.columns(3)
+    for i, item in enumerate(grados_mostrar):
+        with cols[i % 3]:
+            if st.button(item["grado"]["nombre"] + "  (" + str(item["n"]) + " secciones)", width='stretch', key="rep_g_" + str(item["grado"]["id"])):
+                st.session_state["rep_grado_sel"] = item["grado"]["id"]
+                st.rerun()
 
-def _rep_general_por_grado_admin():
+def _rep_general_por_turno_admin():
     st.subheader("Reporte general por auxiliar")
-    st.caption("Puntuales, faltas y total agrupados por turno y auxiliar.")
+    st.caption("Solo se puede generar el reporte cuando la ventana de clases del turno ya cerro.")
+    turnos = listar_turnos()
+    if not turnos:
+        st.info("Sin turnos configurados.")
+        return
+    ops = {t["nombre"]: t["id"] for t in turnos}
+    sel_turno = st.selectbox("Turno", list(ops.keys()), key="repgen_turno")
+    id_turno = ops[sel_turno]
 
-    # Bloqueo: no se puede reportar si hay ventana activa
+    # Verificar si la ventana de clases de ese turno ya cerro
     ha = hora_corta()
-    ventanas_abiertas = []
-    for t in listar_turnos():
-        for v in listar_ventanas(t["id"]):
-            if v["hora_apertura"] <= ha <= v["hora_cierre"]:
-                ventanas_abiertas.append(t["nombre"] + " - " + v["nombre"] + " (cierra " + v["hora_cierre"] + ")")
-
-    if ventanas_abiertas:
-        st.warning("**No se puede generar el reporte todavia.** Hay ventanas de asistencia aun abiertas. Espera a que cierren para que los datos esten completos.")
-        st.markdown("**Ventanas abiertas ahora mismo:**")
-        for v in ventanas_abiertas:
-            st.markdown("- " + v)
+    ventana_clases = None
+    for v in listar_ventanas(id_turno):
+        if v["tipo"] == "clases":
+            ventana_clases = v
+            break
+    if not ventana_clases:
+        st.warning("Este turno no tiene ventana de clases configurada.")
+        return
+    if ha < ventana_clases["hora_cierre"]:
+        st.warning("**No se puede generar el reporte todavia.** La ventana de clases de " + sel_turno + " aun esta abierta (cierra a las " + ventana_clases["hora_cierre"] + ").")
         return
 
     c1, c2 = st.columns(2)
@@ -2445,84 +2636,72 @@ def _rep_general_por_grado_admin():
             ops_p[et] = r["id"]
         sel_lbl = st.selectbox("Periodo", list(ops_p.keys()), key="repgen_pid")
         pid = ops_p[sel_lbl]
-    df = reporte_general_por_seccion(desde, hasta, pid)
+    df = reporte_general_por_turno(desde, hasta, id_turno, pid)
     if df.empty:
         st.info("Sin datos en ese rango.")
         return
     st.markdown("---")
 
-    totales_globales = {"puntuales": 0, "faltas": 0, "total": 0}
-    turnos = ["Mañana", "Tarde"]
-    turnos_presentes = [t for t in turnos if t in df["turno"].unique().tolist()]
+    totales = {"puntuales": 0, "faltas": 0, "permisos": 0, "total": 0}
     html = ['<table style="width:100%; border-collapse: collapse; font-size: 13px;">']
-
-    for turno in turnos_presentes:
-        df_turno = df[df["turno"] == turno]
-        html.append('<tr><th colspan="6" style="background:#FFFFFF; color:black; padding:10px; text-align:left; font-size:14px; border-bottom:2px solid black; border-top:1px solid #ccc;">TURNO ' + turno.upper() + '</th></tr>')
-        html.append('<tr style="background:#FFFFFF;">'
-                    '<th style="padding:6px; border:1px solid #666; text-align:left;">Auxiliar</th>'
-                    '<th style="padding:6px; border:1px solid #666; text-align:left;">Grado</th>'
-                    '<th style="padding:6px; border:1px solid #666; text-align:left;">Seccion</th>'
-                    '<th style="padding:6px; border:1px solid #666; text-align:center;">Puntuales</th>'
-                    '<th style="padding:6px; border:1px solid #666; text-align:center;">Faltas</th>'
-                    '<th style="padding:6px; border:1px solid #666; text-align:center;">Total</th>'
-                    '</tr>')
-        subtotal_turno = {"puntuales": 0, "faltas": 0, "total": 0}
-        auxiliares = df_turno["auxiliar"].unique().tolist()
-        for aux in auxiliares:
-            df_aux = df_turno[df_turno["auxiliar"] == aux].reset_index(drop=True)
-            n = len(df_aux)
-            for i, row in df_aux.iterrows():
-                html.append('<tr>')
-                if i == 0:
-                    html.append('<td rowspan="' + str(n) + '" style="padding:8px; border:1px solid #666; font-weight:700; background:#FFFFFF; vertical-align:top;">' + str(aux) + '</td>')
-                html.append('<td style="padding:6px; border:1px solid #666;">' + str(row['grado']) + '</td>'
-                            '<td style="padding:6px; border:1px solid #666;">' + str(row['seccion']) + '</td>'
-                            '<td style="padding:6px; border:1px solid #666; text-align:center;">' + str(int(row['puntuales'])) + '</td>'
-                            '<td style="padding:6px; border:1px solid #666; text-align:center;">' + str(int(row['faltas'])) + '</td>'
-                            '<td style="padding:6px; border:1px solid #666; text-align:center; font-weight:600;">' + str(int(row['total'])) + '</td>'
-                            '</tr>')
-            sub_aux = {"puntuales": int(df_aux["puntuales"].sum()), "faltas": int(df_aux["faltas"].sum()), "total": int(df_aux["total"].sum())}
-            subtotal_turno["puntuales"] += sub_aux["puntuales"]
-            subtotal_turno["faltas"] += sub_aux["faltas"]
-            subtotal_turno["total"] += sub_aux["total"]
-            html.append('<tr style="background:#F5F5F5; font-style:italic;">'
-                        '<td colspan="3" style="padding:6px; border:1px solid #666; text-align:right;">Subtotal ' + str(aux) + '</td>'
-                        '<td style="padding:6px; border:1px solid #666; text-align:center;">' + str(sub_aux["puntuales"]) + '</td>'
-                        '<td style="padding:6px; border:1px solid #666; text-align:center;">' + str(sub_aux["faltas"]) + '</td>'
-                        '<td style="padding:6px; border:1px solid #666; text-align:center;">' + str(sub_aux["total"]) + '</td>'
+    html.append('<tr><th colspan="6" style="background:#FFFFFF; color:black; padding:10px; text-align:left; font-size:14px; border-bottom:2px solid black;">TURNO ' + sel_turno.upper() + '</th></tr>')
+    html.append('<tr style="background:#FFFFFF;">'
+                '<th style="padding:6px; border:1px solid #666; text-align:left;">Auxiliar</th>'
+                '<th style="padding:6px; border:1px solid #666; text-align:left;">Grado</th>'
+                '<th style="padding:6px; border:1px solid #666; text-align:left;">Seccion</th>'
+                '<th style="padding:6px; border:1px solid #666; text-align:center;">Puntuales</th>'
+                '<th style="padding:6px; border:1px solid #666; text-align:center;">Faltas</th>'
+                '<th style="padding:6px; border:1px solid #666; text-align:center;">Permisos</th>'
+                '<th style="padding:6px; border:1px solid #666; text-align:center;">Total</th>'
+                '</tr>')
+    auxiliares = df["auxiliar"].unique().tolist()
+    for aux in auxiliares:
+        df_aux = df[df["auxiliar"] == aux].reset_index(drop=True)
+        n = len(df_aux)
+        for i, row in df_aux.iterrows():
+            html.append('<tr>')
+            if i == 0:
+                html.append('<td rowspan="' + str(n) + '" style="padding:8px; border:1px solid #666; font-weight:700; background:#FFFFFF; vertical-align:top;">' + str(aux) + '</td>')
+            html.append('<td style="padding:6px; border:1px solid #666;">' + str(row['grado']) + '</td>'
+                        '<td style="padding:6px; border:1px solid #666;">' + str(row['seccion']) + '</td>'
+                        '<td style="padding:6px; border:1px solid #666; text-align:center;">' + str(int(row['puntuales'])) + '</td>'
+                        '<td style="padding:6px; border:1px solid #666; text-align:center;">' + str(int(row['faltas'])) + '</td>'
+                        '<td style="padding:6px; border:1px solid #666; text-align:center;">' + str(int(row['permisos'])) + '</td>'
+                        '<td style="padding:6px; border:1px solid #666; text-align:center; font-weight:600;">' + str(int(row['total'])) + '</td>'
                         '</tr>')
-        html.append('<tr style="background:#E8E8E8; font-weight:700;">'
-                    '<td colspan="3" style="padding:8px; border:1px solid #666; text-align:right;">Subtotal ' + turno + '</td>'
-                    '<td style="padding:8px; border:1px solid #666; text-align:center;">' + str(subtotal_turno["puntuales"]) + '</td>'
-                    '<td style="padding:8px; border:1px solid #666; text-align:center;">' + str(subtotal_turno["faltas"]) + '</td>'
-                    '<td style="padding:8px; border:1px solid #666; text-align:center;">' + str(subtotal_turno["total"]) + '</td>'
+        sub = {"puntuales": int(df_aux["puntuales"].sum()), "faltas": int(df_aux["faltas"].sum()),
+               "permisos": int(df_aux["permisos"].sum()), "total": int(df_aux["total"].sum())}
+        for k in totales: totales[k] += sub[k]
+        html.append('<tr style="background:#F5F5F5; font-style:italic;">'
+                    '<td colspan="3" style="padding:6px; border:1px solid #666; text-align:right;">Subtotal ' + str(aux) + '</td>'
+                    '<td style="padding:6px; border:1px solid #666; text-align:center;">' + str(sub["puntuales"]) + '</td>'
+                    '<td style="padding:6px; border:1px solid #666; text-align:center;">' + str(sub["faltas"]) + '</td>'
+                    '<td style="padding:6px; border:1px solid #666; text-align:center;">' + str(sub["permisos"]) + '</td>'
+                    '<td style="padding:6px; border:1px solid #666; text-align:center;">' + str(sub["total"]) + '</td>'
                     '</tr>')
-        totales_globales["puntuales"] += subtotal_turno["puntuales"]
-        totales_globales["faltas"] += subtotal_turno["faltas"]
-        totales_globales["total"] += subtotal_turno["total"]
-
-    html.append('<tr style="background:#FFFFFF; color:black; font-weight:700; font-size:14px; border-top:2px solid black; border-bottom:2px solid black;">'
-                '<td colspan="3" style="padding:10px; border:1px solid #666; text-align:right;">TOTAL GENERAL</td>'
-                '<td style="padding:10px; border:1px solid #666; text-align:center;">' + str(totales_globales["puntuales"]) + '</td>'
-                '<td style="padding:10px; border:1px solid #666; text-align:center;">' + str(totales_globales["faltas"]) + '</td>'
-                '<td style="padding:10px; border:1px solid #666; text-align:center;">' + str(totales_globales["total"]) + '</td>'
+    html.append('<tr style="background:#E8E8E8; font-weight:700;">'
+                '<td colspan="3" style="padding:8px; border:1px solid #666; text-align:right;">TOTAL ' + sel_turno.upper() + '</td>'
+                '<td style="padding:8px; border:1px solid #666; text-align:center;">' + str(totales["puntuales"]) + '</td>'
+                '<td style="padding:8px; border:1px solid #666; text-align:center;">' + str(totales["faltas"]) + '</td>'
+                '<td style="padding:8px; border:1px solid #666; text-align:center;">' + str(totales["permisos"]) + '</td>'
+                '<td style="padding:8px; border:1px solid #666; text-align:center;">' + str(totales["total"]) + '</td>'
                 '</tr>')
     html.append('</table>')
     st.markdown("".join(html), unsafe_allow_html=True)
 
     st.markdown("---")
     st.markdown("### Descargar")
-    df_export = df.rename(columns={"turno": "Turno", "auxiliar": "Auxiliar", "grado": "Grado",
-                                    "seccion": "Seccion", "puntuales": "Puntuales",
-                                    "faltas": "Faltas", "total": "Total"})
+    df_export = df.rename(columns={"auxiliar": "Auxiliar", "grado": "Grado", "seccion": "Seccion",
+                                    "puntuales": "Puntuales", "faltas": "Faltas",
+                                    "permisos": "Permisos", "total": "Total"})
     c1, c2 = st.columns(2)
     with c1:
         st.download_button("Excel", df_a_xlsx(df_export, "General por auxiliar"),
-                           "Reporte_general_" + str(desde) + "_" + str(hasta) + ".xlsx", width='stretch')
+                           "Reporte_" + sel_turno + "_" + str(desde) + "_" + str(hasta) + ".xlsx", width='stretch')
     with c2:
-        st.download_button("PDF", generar_pdf_tabla_ancha(df_export, "Reporte general por auxiliar", str(desde) + " a " + str(hasta)),
-                           "Reporte_general_" + str(desde) + "_" + str(hasta) + ".pdf", "application/pdf", width='stretch')
+        st.download_button("PDF", generar_pdf_tabla_ancha(df_export, "Reporte general " + sel_turno, str(desde) + " a " + str(hasta)),
+                           "Reporte_" + sel_turno + "_" + str(desde) + "_" + str(hasta) + ".pdf", "application/pdf", width='stretch')
+
 def vista_reportes():
     st.title("Reportes y Consultas")
     usuario = st.session_state["user"]; rol = usuario["rol"]
@@ -2547,34 +2726,10 @@ def vista_reportes():
             key="rep_modo_admin", horizontal=True, label_visibility="collapsed"
         )
         if modo == "General por auxiliar (Admin)":
-            _rep_general_por_grado_admin()
+            _rep_general_por_turno_admin()
             return
 
-    permitidas = None
-    if rol == "Auxiliar":
-        con = obtener_conexion()
-        permitidas = [f["seccion_id"] for f in con.execute("SELECT seccion_id FROM auxiliar_secciones WHERE usuario_id=?", (usuario["id"],)).fetchall()]
-        if not permitidas:
-            st.info("No tienes secciones asignadas. Contacta al Admin.")
-            return
-
-    secs = listar_todas_secciones()
-    if permitidas is not None:
-        secs = [s for s in secs if s["id"] in permitidas]
-    if not secs:
-        st.warning("No hay secciones disponibles.")
-        return
-
-    if rol == "Auxiliar" and len(secs) == 1:
-        _rep_descarga_directa(secs[0]["id"])
-        return
-
-    st.markdown("### Elige la seccion")
-    cols = st.columns(3)
-    for i, s in enumerate(secs):
-        with cols[i % 3]:
-            if st.button(s['grado'] + " " + s['seccion'] + " (" + s['turno'] + ")", width='stretch', key="rep_sec_" + str(s['id'])):
-                _rep_descarga_directa(s["id"])
+    _rep_seleccionar_seccion(usuario)
 
 # alumnos UI
 def _frag_crear_alumno():
@@ -2844,19 +2999,23 @@ def _carnets_ver_seccion(idsec):
     df = alumnos_de_seccion(idsec)
     if df.empty:
         st.info("Sin alumnos activos."); return
-    st.caption(str(len(df)) + " alumnos. Aprieta un QR para seleccionarlo.")
+    st.caption(str(len(df)) + " alumnos. Aprieta un nombre para seleccionarlo.")
     if "carn_sel_alumnos" not in st.session_state:
         st.session_state["carn_sel_alumnos"] = set()
     sel = st.session_state["carn_sel_alumnos"]
     cols = st.columns(4)
     for i, (_, al) in enumerate(df.iterrows()):
         with cols[i % 4]:
-            marcado = "[X] " if al["id"] in sel else ""
-            if st.button(marcado + al['nombre_completo'], key="carn_al_" + str(al['id']), width='stretch'):
-                if al["id"] in sel: sel.discard(al["id"])
-                else: sel.add(al["id"])
-                st.rerun()
-            st.image(generar_qr(al["dni"]), width=120)
+            if al["id"] in sel:
+                st.markdown('<div class="btn-sel">', unsafe_allow_html=True)
+                if st.button(al['nombre_completo'], key="carn_al_" + str(al['id']), width='stretch'):
+                    sel.discard(al["id"])
+                    st.rerun()
+                st.markdown('</div>', unsafe_allow_html=True)
+            else:
+                if st.button(al['nombre_completo'], key="carn_al_" + str(al['id']), width='stretch'):
+                    sel.add(al["id"])
+                    st.rerun()
     st.markdown("---")
     st.write("Seleccionados: " + str(len(sel)))
     c1, c2, c3 = st.columns(3)
@@ -3361,13 +3520,6 @@ def vista_dias_especiales():
 
 # menu
 def _opciones_auxiliar(usuario):
-    con = obtener_conexion()
-    tiene = con.execute(
-        "SELECT COUNT(*) FROM auxiliar_secciones WHERE usuario_id=?",
-        (usuario["id"],)
-    ).fetchone()[0] > 0
-    if not tiene:
-        return ["Puerta"]
     return ["Puerta", "TOECE", "Reportes", "Mi cuenta"]
 
 def obtener_opciones_por_rol(usuario):
@@ -3432,10 +3584,8 @@ def main():
     try:
         inicializar_bd()
         aplicar_estilos()
-        inicializar_sesion()
         if not st.session_state.get("user"):
             vista_login(); return
-        refrescar_sesion_si_necesario()
         if not _verificar_admin_activo():
             st.error("No hay Admin principal activo en el sistema.")
             st.info("Contacta al desarrollador para restaurar el acceso.")
