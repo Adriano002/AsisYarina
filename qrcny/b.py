@@ -74,10 +74,6 @@ def verificar_password_critica(password):
             return True
     return False
 
-# ============================================================
-# BD - ARQUITECTURA MULTIHILO
-# ============================================================
-
 _hilos = threading.local()
 _lock_escritura = threading.Lock()
 
@@ -813,10 +809,6 @@ def quitar_justificacion(ida, usuario):
     auditar(usuario["usuario"], "Quito justificacion id=" + str(ida), tb="asistencias", rid=ida)
     return True, "Justificacion eliminada."
 
-# ============================================================
-# ESCANEO QR - COMPONENTE PROPIO
-# ============================================================
-
 def _procesar_escaneo(dni):
     u = st.session_state.get("user")
     if not u: return
@@ -1328,16 +1320,16 @@ def _generar_fondo_fotocheck(ancho_px, alto_px):
     ]
     draw.polygon(puntos_naranja, fill=NARANJA)
 
-    # --- Círculo decorativo verde abajo-izquierda ---
+    # Círculo decorativo verde abajo-izquierda
     cx, cy = 0, alto_px
     r = int(alto_px * 0.30)
     draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=VERDE)
 
-    # --- Círculo naranja pequeño abajo-izquierda (superpuesto) ---
+    # Círculo naranja pequeño abajo-izquierda (superpuesto) 
     r2 = int(alto_px * 0.16)
     draw.ellipse([cx - r2, cy - r2, cx + r2, cy + r2], fill=NARANJA)
 
-    # --- Líneas diagonales finas naranjas arriba-derecha ---
+    # Líneas diagonales finas naranjas arriba-derecha 
     for i in range(5):
         offset = i * 10
         draw.line(
@@ -1362,7 +1354,7 @@ def _generar_fotocheck_pil(alumno, escudo_path=None):
     ANCHO_PX = 817
     ALTO_PX = 550
 
-    # --- Colores balanceados (ni muy fuertes ni muy tenues) ---
+    # Colores balanceados (ni muy fuertes ni muy tenues) 
     NARANJA_OSCURO = (225, 150, 90)
     NARANJA_CLARO = (240, 175, 115)
     NARANJA_FRANJA = (220, 140, 80)
@@ -1372,10 +1364,6 @@ def _generar_fotocheck_pil(alumno, escudo_path=None):
     GRIS_LABEL = (90, 60, 30)
     GRIS_FOTO = (240, 240, 240)
     GRIS_TXT = (150, 150, 150)
-
-    # ============================================================
-    # FONDO DERECHO + PATRON DE PUNTOS (balanceado)
-    # ============================================================
     img = Image.new("RGB", (ANCHO_PX, ALTO_PX), FONDO_ANARANJADO)
     draw = ImageDraw.Draw(img)
 
@@ -1389,9 +1377,7 @@ def _generar_fotocheck_pil(alumno, escudo_path=None):
                 fill=color_punto
             )
 
-    # ============================================================
-    # ESCUDO MARCA DE AGUA - 15% (balanceado)
-    # ============================================================
+ 
     if escudo_path and Path(escudo_path).exists():
         try:
             escudo_wm = Image.open(str(escudo_path)).convert("RGBA")
@@ -1406,9 +1392,6 @@ def _generar_fotocheck_pil(alumno, escudo_path=None):
         except Exception:
             pass
 
-    # ============================================================
-    # FRANJA IZQUIERDA CON DEGRADADO (balanceado)
-    # ============================================================
     FOTO_W = 216
     FOTO_H = 280
     FRANJA_W = FOTO_W
@@ -1420,9 +1403,6 @@ def _generar_fotocheck_pil(alumno, escudo_path=None):
         b = int(NARANJA_OSCURO[2] + (NARANJA_CLARO[2] - NARANJA_OSCURO[2]) * t)
         draw.line([(0, y), (FRANJA_W, y)], fill=(r, g, b))
 
-    # ============================================================
-    # FUENTES
-    # ============================================================
     def _font(size, bold=False, italic=False):
         nombres = []
         if bold and italic:
@@ -1446,9 +1426,6 @@ def _generar_fotocheck_pil(alumno, escudo_path=None):
     f_frase = _font(19, bold=True, italic=True)
     f_label = _font(20, bold=True)
 
-    # ============================================================
-    # ESCUDO EN LA FRANJA - CENTRADO
-    # ============================================================
     escudo_size = 80
     escudo_x = (FRANJA_W - escudo_size) // 2
     espacio_disponible = ALTO_PX - FOTO_H
@@ -1465,9 +1442,6 @@ def _generar_fotocheck_pil(alumno, escudo_path=None):
         except Exception:
             pass
 
-    # ============================================================
-    # TEXTO "INSTITUCIÓN EDUCATIVA YARINACOCHA"
-    # ============================================================
     def _texto_centrado_franja(texto, y, font, color):
         try:
             bbox = draw.textbbox((0, 0), texto, font=font)
@@ -1484,9 +1458,6 @@ def _generar_fotocheck_pil(alumno, escudo_path=None):
     y_txt += 14
     _texto_centrado_franja("YARINACOCHA", y_txt, f_colegio, BLANCO)
 
-    # ============================================================
-    # FOTO con borde bien pequenito
-    # ============================================================
     foto_x = 0
     foto_y = ALTO_PX - FOTO_H
     draw.rectangle([foto_x, foto_y, foto_x + FOTO_W, foto_y + FOTO_H], fill=BLANCO)
@@ -1508,9 +1479,6 @@ def _generar_fotocheck_pil(alumno, escudo_path=None):
         texto_foto, fill=GRIS_TXT, font=f_foto
     )
 
-    # ============================================================
-    # LADO DERECHO
-    # ============================================================
     DER_X = FRANJA_W + 14
 
     titulo_txt = "FOTOCHECK DEL ESTUDIANTE"
@@ -1591,9 +1559,6 @@ def _generar_fotocheck_pil(alumno, escudo_path=None):
     f_v = _ajustar(anio, 28, ancho_info - int(etiqueta_ancho) - 10, True)
     draw.text((valor_x, y6), anio, fill=NEGRO, font=f_v)
 
-    # ============================================================
-    # QR
-    # ============================================================
     qr_y = 60
 
     qr = qrcode.QRCode(version=1, box_size=10, border=1)
@@ -1603,9 +1568,6 @@ def _generar_fotocheck_pil(alumno, escudo_path=None):
     qr_img_pil = qr_img_pil.resize((QR_SIZE, QR_SIZE), Image.LANCZOS)
     img.paste(qr_img_pil, (qr_x, qr_y))
 
-    # ============================================================
-    # FRASE
-    # ============================================================
     frase = "\"Ser del CNY, es ser mejor\""
     try:
         bbox = draw.textbbox((0, 0), frase, font=f_frase)
