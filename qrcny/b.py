@@ -1355,12 +1355,16 @@ def _generar_fondo_fotocheck(ancho_px, alto_px):
 
 
 def _generar_fotocheck_pil(alumno, escudo_path=None):
+    """Fotocheck 8.3 x 5.3 cm (817 x 522 px a 250 DPI).
+    Franja izquierda naranja + foto con borde pequenito.
+    Fondo derecho naranja + patron de puntos + escudo marca de agua balanceado.
+    Info: apellidos/nombres SIN etiqueta, DNI/GRADO/TURNO/AÑO con etiqueta."""
     from PIL import Image, ImageDraw, ImageFont
     import qrcode
     from datetime import datetime
 
     ANCHO_PX = 817
-    ALTO_PX = 550
+    ALTO_PX = 522
 
     # --- Colores balanceados (ni muy fuertes ni muy tenues) ---
     NARANJA_OSCURO = (225, 150, 90)
