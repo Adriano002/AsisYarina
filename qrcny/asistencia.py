@@ -1,5 +1,3 @@
-
-
 import base64
 import hashlib
 import json
@@ -6469,11 +6467,7 @@ def vista_dias_especiales():
                 auditar(usuario["usuario"], "Elimino dia especial id=" + str(ops[sel]))
                 st.toast("Dia especial eliminado")
                 st.rerun()
-
-
-# ============================================================
-# MENU
-# ============================================================
+                
 def _opciones_auxiliar(usuario):
     return ["Puerta", "TOECE", "Reportes", "Mi cuenta"]
 
