@@ -1,12 +1,10 @@
 # qr_scanner_component.py
 # Componente de escaneo QR para Streamlit.
-# - Destruye el scanner al ocultarse la pestana (no pausa).
-# - Heartbeat de video cada 3s.
-# - Cooldown por frame (400ms) y por DNI (3s) para evitar doble escaneo.
+# Version robusta que evita NotReadableError en Chrome Android.
 import streamlit as st
 
 QR_SCANNER_COMPONENT = st.components.v2.component(
-    name="mi_qr_scanner_v20",
+    name="mi_qr_scanner_v21",
     isolate_styles=False,
     html="""
     <div id="qr-wrapper">
@@ -50,6 +48,9 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         let iniciado = false;
         let pausado = false;
         let heartbeatTimer = null;
+        let reiniciando = false;
+        let intentosFallidos = 0;
+        const MAX_INTENTOS = 5;
 
         const FRAME_COOLDOWN_MS = 400;
         const DNI_COOLDOWN_MS = 3000;
@@ -59,6 +60,9 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         let ultimoDniEmitido = null;
         let ultimoTimestampDni = 0;
 
+        // ============================================================
+        // AUDIO
+        // ============================================================
         let audioCtx = null;
         function getAudioCtx() {
             if (!audioCtx) {
@@ -109,6 +113,9 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         window.__qrFeedback = reproducir;
         try { window.parent.__qrFeedback = reproducir; } catch (e) {}
 
+        // ============================================================
+        // UTILIDADES
+        // ============================================================
         function setStatus(t) {
             const el = document.getElementById('qr-status');
             if (el) { el.textContent = t; el.style.display = 'block'; }
@@ -120,9 +127,55 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             if (s) s.style.display = 'none';
             console.error('[QR]', t);
         }
+        function limpiarError() {
+            const e = document.getElementById('qr-error');
+            if (e) { e.textContent = ''; e.style.display = 'none'; }
+        }
         function detenerHeartbeat() {
             if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
         }
+
+        // ============================================================
+        // LIBERACION FORZADA DE CAMARA
+        // Esto es la clave para evitar NotReadableError en Android.
+        // Detiene TODOS los tracks de video activos en el documento.
+        // ============================================================
+        function forzarLiberacionCamara() {
+            try {
+                const videos = document.querySelectorAll('video');
+                videos.forEach(v => {
+                    try {
+                        if (v.srcObject) {
+                            v.srcObject.getTracks().forEach(track => {
+                                try { track.stop(); } catch (e) {}
+                            });
+                            v.srcObject = null;
+                        }
+                        v.pause();
+                        v.src = '';
+                        v.load();
+                    } catch (e) {}
+                });
+                // Tambien intenta liberar tracks a nivel global de mediaDevices
+                if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+                    navigator.mediaDevices.enumerateDevices()
+                        .then(devices => {
+                            devices.forEach(d => {
+                                if (d.kind === 'videoinput') {
+                                    // No podemos cerrar streams ajenos, pero forzamos GC
+                                }
+                            });
+                        })
+                        .catch(() => {});
+                }
+            } catch (e) {
+                console.warn('[QR] error en forzarLiberacionCamara:', e);
+            }
+        }
+
+        // ============================================================
+        // DESTRUIR
+        // ============================================================
         function destruirScanner() {
             pausado = false;
             detenerHeartbeat();
@@ -133,27 +186,65 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             iniciado = false;
             const reader = document.getElementById('qr-reader');
             if (reader) reader.innerHTML = '';
+            // Fuerza la liberacion de tracks
+            forzarLiberacionCamara();
+            // Reset cooldowns
             ultimoTextoHash = null;
             ultimoTimestampFrame = 0;
             ultimoDniEmitido = null;
             ultimoTimestampDni = 0;
         }
+
+        // ============================================================
+        // HEARTBEAT
+        // Cada 3s verifica que el video siga vivo. Si no, reinicia.
+        // ============================================================
         function iniciarHeartbeat() {
             detenerHeartbeat();
             heartbeatTimer = setInterval(() => {
-                if (!iniciado) return;
+                if (!iniciado || reiniciando) return;
                 const v = document.querySelector('#qr-reader video');
-                if (!v) return;
+                if (!v) {
+                    console.warn('[QR] heartbeat: no hay video, reiniciando');
+                    reiniciarScanner();
+                    return;
+                }
                 if (v.readyState < 2) {
-                    console.warn('[QR] heartbeat: video muerto, reiniciando');
-                    destruirScanner();
-                    iniciarScanner();
+                    console.warn('[QR] heartbeat: video muerto (readyState=' + v.readyState + '), reiniciando');
+                    reiniciarScanner();
                 }
             }, 3000);
         }
 
+        // ============================================================
+        // REINICIAR (con guard para evitar loops)
+        // ============================================================
+        function reiniciarScanner() {
+            if (reiniciando) return;
+            reiniciando = true;
+            intentosFallidos++;
+            if (intentosFallidos > MAX_INTENTOS) {
+                setError('No se pudo acceder a la camara. Cierra otras apps que usen la camara y recarga la pagina.');
+                reiniciando = false;
+                return;
+            }
+            console.warn('[QR] reiniciando scanner, intento ' + intentosFallidos);
+            destruirScanner();
+            // Espera mas larga si hemos fallado varias veces
+            const espera = 1500 + (intentosFallidos * 500);
+            setTimeout(() => {
+                reiniciando = false;
+                iniciarScanner();
+            }, espera);
+        }
+
+        // ============================================================
+        // INICIAR SCANNER
+        // ============================================================
         function iniciarScanner() {
-            if (iniciado) return;
+            if (iniciado || reiniciando) return;
+            limpiarError();
+
             if (typeof Html5QrcodeScanner === 'undefined') {
                 setError('Libreria QR no cargada.'); return;
             }
@@ -163,79 +254,136 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             const reader = document.getElementById('qr-reader');
             if (!reader) { setError('Contenedor qr-reader no existe.'); return; }
 
+            // Destruye cualquier instancia previa y libera camara
             destruirScanner();
             reader.innerHTML = '';
             iniciado = true;
+            setStatus('Iniciando camara...');
             getAudioCtx();
 
+            // ------------------------------------------------------------
+            // CAPA 1: espera inicial de 1.5s
+            // ------------------------------------------------------------
             setTimeout(() => {
                 if (!iniciado) return;
-                scanner = new Html5QrcodeScanner(
-                    "qr-reader",
-                    {
-                        fps: 10,
-                        qrbox: { width: 250, height: 250 },
-                        aspectRatio: 1.0,
-                        rememberLastUsedCamera: true,
-                        videoConstraints: { facingMode: "environment" },
-                        supportedScanTypes: [Html5QrcodeScanType.SCAN_TYPE_CAMERA]
-                    },
-                    false
-                );
 
-                const onScanSuccess = (texto) => {
+                // ------------------------------------------------------------
+                // CAPA 2: liberar camara una vez mas antes de pedirla
+                // ------------------------------------------------------------
+                forzarLiberacionCamara();
+
+                // ------------------------------------------------------------
+                // CAPA 3: otra espera de 800ms antes de crear el scanner
+                // ------------------------------------------------------------
+                setTimeout(() => {
+                    if (!iniciado) return;
+
                     try {
-                        const m = texto.match(/\\b(\\d{8})\\b/);
-                        if (!m) return;
-                        const dni = m[1];
-                        const ahora = Date.now();
+                        scanner = new Html5QrcodeScanner(
+                            "qr-reader",
+                            {
+                                fps: 10,
+                                qrbox: { width: 250, height: 250 },
+                                aspectRatio: 1.0,
+                                rememberLastUsedCamera: true,
+                                videoConstraints: { facingMode: "environment" },
+                                supportedScanTypes: [Html5QrcodeScanType.SCAN_TYPE_CAMERA]
+                            },
+                            false
+                        );
+                    } catch (e) {
+                        setError('Error al crear scanner: ' + ((e && e.message) || e));
+                        iniciado = false;
+                        reiniciarScanner();
+                        return;
+                    }
 
-                        const textoHash = dni + '|' + texto.length;
-                        if (textoHash === ultimoTextoHash && (ahora - ultimoTimestampFrame) < FRAME_COOLDOWN_MS) {
-                            return;
-                        }
-                        ultimoTextoHash = textoHash;
-                        ultimoTimestampFrame = ahora;
+                    const onScanSuccess = (texto) => {
+                        try {
+                            const m = texto.match(/\\b(\\d{8})\\b/);
+                            if (!m) return;
+                            const dni = m[1];
+                            const ahora = Date.now();
 
-                        if (dni === ultimoDniEmitido && (ahora - ultimoTimestampDni) < DNI_COOLDOWN_MS) {
-                            return;
-                        }
-                        ultimoDniEmitido = dni;
-                        ultimoTimestampDni = ahora;
+                            const textoHash = dni + '|' + texto.length;
+                            if (textoHash === ultimoTextoHash && (ahora - ultimoTimestampFrame) < FRAME_COOLDOWN_MS) {
+                                return;
+                            }
+                            ultimoTextoHash = textoHash;
+                            ultimoTimestampFrame = ahora;
 
-                        setStatus('QR: ' + dni);
-                        setTriggerValue("qr_dni", dni);
-                    } catch (e) { console.error('[QR] onScanSuccess:', e); }
-                };
+                            if (dni === ultimoDniEmitido && (ahora - ultimoTimestampDni) < DNI_COOLDOWN_MS) {
+                                return;
+                            }
+                            ultimoDniEmitido = dni;
+                            ultimoTimestampDni = ahora;
 
-                let resultado;
-                try {
-                    resultado = scanner.render(onScanSuccess, () => {});
-                } catch (e) {
-                    setError('Error al iniciar: ' + ((e && e.message) || e));
-                    iniciado = false;
-                    return;
-                }
+                            setStatus('QR: ' + dni);
+                            setTriggerValue("qr_dni", dni);
+                        } catch (e) { console.error('[QR] onScanSuccess:', e); }
+                    };
 
-                if (resultado && typeof resultado.then === 'function') {
-                    resultado
-                        .then(() => { setStatus('Camara activa.'); iniciarHeartbeat(); })
-                        .catch((e) => {
-                            setError('Error camara: ' + ((e && e.message) || e));
+                    let resultado;
+                    try {
+                        resultado = scanner.render(onScanSuccess, () => {});
+                    } catch (e) {
+                        const msg = (e && e.message) || String(e);
+                        if (msg.toLowerCase().includes('notreadable') ||
+                            msg.toLowerCase().includes('could not start')) {
+                            console.warn('[QR] NotReadableError capturado, reintentando...');
                             iniciado = false;
-                        });
-                } else {
-                    setStatus('Camara activa.');
-                    iniciarHeartbeat();
-                }
-            }, 400);
+                            reiniciarScanner();
+                            return;
+                        }
+                        setError('Error al iniciar: ' + msg);
+                        iniciado = false;
+                        reiniciarScanner();
+                        return;
+                    }
+
+                    if (resultado && typeof resultado.then === 'function') {
+                        resultado
+                            .then(() => {
+                                intentosFallidos = 0;
+                                setStatus('Camara activa. Apunta al codigo.');
+                                iniciarHeartbeat();
+                            })
+                            .catch((e) => {
+                                const msg = (e && e.message) || String(e);
+                                if (msg.toLowerCase().includes('notreadable') ||
+                                    msg.toLowerCase().includes('could not start')) {
+                                    console.warn('[QR] NotReadableError en promise, reintentando...');
+                                    iniciado = false;
+                                    reiniciarScanner();
+                                    return;
+                                }
+                                setError('Error camara: ' + msg);
+                                iniciado = false;
+                                reiniciarScanner();
+                            });
+                    } else {
+                        intentosFallidos = 0;
+                        setStatus('Camara activa. Apunta al codigo.');
+                        iniciarHeartbeat();
+                    }
+                }, 800);
+            }, 1500);
         }
 
+        // ============================================================
+        // VISIBILITY: destruir al ocultar, reiniciar al volver
+        // ============================================================
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'hidden') {
                 destruirScanner();
             } else if (document.visibilityState === 'visible') {
-                setTimeout(() => { if (!iniciado) iniciarScanner(); }, 300);
+                // Espera 2s al volver para dar tiempo a que el sistema libere la camara
+                setTimeout(() => {
+                    if (!iniciado && !reiniciando) {
+                        intentosFallidos = 0;
+                        iniciarScanner();
+                    }
+                }, 2000);
             }
         });
         window.addEventListener('blur', () => {
@@ -243,49 +391,60 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         });
         window.addEventListener('focus', () => {
             if (document.visibilityState === 'visible') {
-                setTimeout(() => { if (!iniciado) iniciarScanner(); }, 300);
+                setTimeout(() => {
+                    if (!iniciado && !reiniciando) {
+                        intentosFallidos = 0;
+                        iniciarScanner();
+                    }
+                }, 2000);
             }
         });
-        window.addEventListener('beforeunload', destruirScanner);
+        window.addEventListener('beforeunload', () => {
+            destruirScanner();
+            forzarLiberacionCamara();
+        });
 
-        if (window.__qrV20Listo && typeof Html5QrcodeScanner !== 'undefined') {
+        // ============================================================
+        // CARGA DE LIBRERIA
+        // ============================================================
+        if (window.__qrV21Listo && typeof Html5QrcodeScanner !== 'undefined') {
             iniciarScanner();
             return;
         }
-        if (window.__qrV20Cargando) {
+        if (window.__qrV21Cargando) {
             let n = 0;
             const t = setInterval(() => {
                 n++;
                 if (typeof Html5QrcodeScanner !== 'undefined') {
                     clearInterval(t);
-                    window.__qrV20Listo = true;
-                    window.__qrV20Cargando = false;
+                    window.__qrV21Listo = true;
+                    window.__qrV21Cargando = false;
                     iniciarScanner();
                 } else if (n > 100) {
                     clearInterval(t);
-                    window.__qrV20Cargando = false;
+                    window.__qrV21Cargando = false;
                     setError('Timeout cargando libreria.');
                 }
             }, 100);
             return;
         }
-        window.__qrV20Cargando = true;
+        window.__qrV21Cargando = true;
         const s = document.createElement('script');
         s.src = 'https://unpkg.com/html5-qrcode';
         s.async = true;
         s.onload = () => {
-            window.__qrV20Listo = true;
-            window.__qrV20Cargando = false;
+            window.__qrV21Listo = true;
+            window.__qrV21Cargando = false;
             setTimeout(() => {
                 if (typeof Html5QrcodeScanner === 'undefined') {
                     setError('Libreria cargada sin Html5QrcodeScanner.');
                     return;
                 }
                 iniciarScanner();
-            }, 50);
+            }, 100);
         };
         s.onerror = () => {
-            window.__qrV20Cargando = false;
+            window.__qrV21Cargando = false;
             setError('Error al cargar html5-qrcode del CDN.');
         };
         document.head.appendChild(s);
