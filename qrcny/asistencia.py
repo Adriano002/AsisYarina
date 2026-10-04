@@ -3905,6 +3905,7 @@ def escaner_qr_continuo(key="qr_scanner"):
 
     key_full = "qr_scanner_persistente"
 
+    # Armar el ultimo mensaje para el toast flotante de arriba
     ultimo_mensaje = None
     mensajes = st.session_state.get("_qr_mensajes", [])
     if mensajes:
@@ -3956,7 +3957,10 @@ def escaner_qr_continuo(key="qr_scanner"):
                 "kind": kind,
                 "titulo": titulo,
                 "nombre": nombre,
-                "detalle": detalle
+                "detalle": detalle,
+                "mensaje": msg_txt,
+                "tipo": tipo,
+                "extra": extra,
             }
 
     result = qr_scanner(key=key_full, on_scan=_on_scan, ultimo_mensaje=ultimo_mensaje)
@@ -3968,6 +3972,7 @@ def escaner_qr_continuo(key="qr_scanner"):
             st.session_state["_ultimo_qr_scan"] = {"dni": dni, "ts": time.time()}
             _procesar_escaneo(dni)
 
+    # Sonido
     sp = st.session_state.get("_qr_sonido_pendiente")
     if sp and (time.time() - sp.get("ts", 0)) < 30:
         kind_js = sp["kind"]
@@ -4005,6 +4010,7 @@ def escaner_qr_continuo(key="qr_scanner"):
         """, height=0)
         st.session_state.pop("_qr_sonido_pendiente", None)
 
+    # Lista de los ultimos escaneos debajo del escaner (como antes)
     if st.session_state.get("_qr_mensajes"):
         st.markdown('<div class="scan-ultimos">Ultimos escaneos</div>', unsafe_allow_html=True)
         for msg in st.session_state["_qr_mensajes"][:5]:
