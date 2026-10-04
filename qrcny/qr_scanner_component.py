@@ -1,11 +1,11 @@
 # qr_scanner_component.py
-# Componente QR con BarcodeDetector + Polyfill ZXing.
-# Incluye: sonidos diferenciados, aviso flotante ARRIBA con el nombre,
-# boton de pausa, boton de reinicio, video cuadrado, y protecciones contra NotReadableError.
+# Version robusta. Usa callback on_qr_dni_change como canal principal.
+# Incluye: sonidos diferenciados, aviso flotante ARRIBA, botones pausa/reinicio,
+# video cuadrado, protecciones contra NotReadableError.
 import streamlit as st
 
 QR_SCANNER_COMPONENT = st.components.v2.component(
-    name="mi_qr_scanner_v27",
+    name="mi_qr_scanner_v28",
     isolate_styles=False,
     html="""
     <div id="qr-wrapper">
@@ -79,42 +79,24 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
     #qr-toast.toast-incidencia { border-left-color: #3B82F6; background: rgba(10, 30, 55, 0.95); }
 
     #qr-toast-titulo {
-        font-size: 11px;
-        font-weight: 800;
-        text-transform: uppercase;
-        letter-spacing: 0.14em;
-        opacity: 0.85;
-        margin-bottom: 4px;
+        font-size: 11px; font-weight: 800; text-transform: uppercase;
+        letter-spacing: 0.14em; opacity: 0.85; margin-bottom: 4px;
     }
     #qr-toast-nombre {
-        font-size: 17px;
-        font-weight: 800;
-        line-height: 1.2;
-        letter-spacing: -0.01em;
+        font-size: 17px; font-weight: 800; line-height: 1.2; letter-spacing: -0.01em;
     }
     #qr-toast-detalle {
-        font-size: 12px;
-        opacity: 0.85;
-        margin-top: 4px;
-        line-height: 1.4;
+        font-size: 12px; opacity: 0.85; margin-top: 4px; line-height: 1.4;
     }
 
     #qr-controls {
-        display: flex;
-        gap: 8px;
-        margin-top: 10px;
-        justify-content: center;
-        flex-wrap: wrap;
+        display: flex; gap: 8px; margin-top: 10px;
+        justify-content: center; flex-wrap: wrap;
     }
     #qr-controls button {
-        background: #E65100;
-        color: #FFFFFF;
-        border: none;
-        border-radius: 6px;
-        padding: 10px 18px;
-        font-size: 13px;
-        font-weight: 600;
-        cursor: pointer;
+        background: #E65100; color: #FFFFFF; border: none;
+        border-radius: 6px; padding: 10px 18px;
+        font-size: 13px; font-weight: 600; cursor: pointer;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         transition: background 120ms ease;
     }
@@ -124,23 +106,14 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
     #qr-controls button:disabled { background: #9E9E9E; cursor: not-allowed; }
 
     #qr-status {
-        text-align: center;
-        font-size: 13px;
-        margin-top: 8px;
-        color: #666;
+        text-align: center; font-size: 13px; margin-top: 8px; color: #666;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
     #qr-error {
-        text-align: center;
-        font-size: 13px;
-        margin-top: 8px;
-        color: #C62828;
+        text-align: center; font-size: 13px; margin-top: 8px; color: #C62828;
         font-weight: 600;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        padding: 10px;
-        border: 1px solid #C62828;
-        border-radius: 6px;
-        background: #f8d7da;
+        padding: 10px; border: 1px solid #C62828; border-radius: 6px; background: #f8d7da;
     }
     """,
     js="""
@@ -149,7 +122,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
 
         const DNI_REGEX = /\\b(\\d{8})\\b/;
         const SCAN_INTERVAL_MS = 250;
-        const ANTI_REBOTE_MS = 800;
+        const ANTI_REBOTE_MS = 1200;
 
         let stream = null;
         let detector = null;
@@ -201,7 +174,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             _tono(90,0.30,'sawtooth',0.45,0.36);
         }
         function sonidoIncidencia() { _tono(523,0.10,'triangle',0.35,0); _tono(523,0.10,'triangle',0.35,0.15); }
-
         function reproducir(kind) {
             try {
                 getAudioCtx();
@@ -219,12 +191,9 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         window.__qrFeedback = reproducir;
         try { window.parent.__qrFeedback = reproducir; } catch (e) {}
 
-        // Desbloquear audio con el primer toque del usuario
-        function desbloquearAudioUnaVez() {
-            getAudioCtx();
-        }
-        document.addEventListener('touchstart', desbloquearAudioUnaVez, { once: true });
-        document.addEventListener('click', desbloquearAudioUnaVez, { once: true });
+        function desbloquearAudio() { getAudioCtx(); }
+        document.addEventListener('touchstart', desbloquearAudio, { once: true });
+        document.addEventListener('click', desbloquearAudio, { once: true });
 
         // ============================================================
         // UTILIDADES
@@ -362,7 +331,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                 script.src = 'https://cdn.jsdelivr.net/npm/@sec-ant/barcode-detector@1.3/dist/iife/side-effects.min.js';
                 script.async = true;
                 script.onload = () => { polyfillCargado = true; resolve(); };
-                script.onerror = () => { reject(new Error('No se pudo cargar el polyfill.')); };
+                script.onerror = () => { reject(new Error('No se pudo cargar polyfill.')); };
                 document.head.appendChild(script);
             });
         }
@@ -443,15 +412,13 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                             if (match) {
                                 const dni = match[1];
                                 const ahora = Date.now();
-                                // Anti-rebote: solo evita emitir el mismo DNI en frames
-                                // consecutivos dentro de los primeros 800ms.
-                                // Si pasan mas de 800ms, el mismo DNI se emite otra vez.
                                 if (dni === ultimoDni && (ahora - ultimoTimestampDni) < ANTI_REBOTE_MS) {
-                                    // ignorar
+                                    // ignorar rebote de frames
                                 } else {
                                     ultimoDni = dni;
                                     ultimoTimestampDni = ahora;
                                     setStatus('QR detectado: ' + dni);
+                                    console.log('[QR] EMITIENDO DNI:', dni);
                                     setTriggerValue("qr_dni", dni);
                                 }
                             }
@@ -493,13 +460,12 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
 
 def qr_scanner(key="qr_scanner", on_scan=None, ultimo_mensaje=None):
     """
-    ultimo_mensaje: dict con:
-        kind: 'puntual' | 'tardanza' | 'duplicado' | 'bloqueado' | 'error' | 'incidencia'
-        titulo, nombre, detalle
-    Se muestra como aviso flotante ARRIBA del video.
+    Llama al componente. El DNI llega a traves de on_scan (callback)
+    cuando el usuario escanea un QR valido.
+    ultimo_mensaje: dict con kind/titulo/nombre/detalle para el toast de arriba.
     """
     if on_scan is None:
-        on_scan = lambda: None
+        on_scan = lambda *args, **kwargs: None
 
     if ultimo_mensaje:
         try:
