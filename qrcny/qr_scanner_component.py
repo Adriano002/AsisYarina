@@ -1,15 +1,14 @@
 # qr_scanner_component.py
-# Version robusta. Usa callback on_qr_dni_change como canal principal.
-# Incluye: sonidos diferenciados, aviso flotante ARRIBA, botones pausa/reinicio,
-# video cuadrado, protecciones contra NotReadableError.
+# Basado en la v18 que funciona. Agrega: sonidos diferenciados,
+# aviso flotante, boton pausa, video cuadrado.
 import streamlit as st
 
 QR_SCANNER_COMPONENT = st.components.v2.component(
-    name="mi_qr_scanner_v28",
+    name="mi_qr_scanner_v30",
     isolate_styles=False,
     html="""
     <div id="qr-wrapper">
-        <video id="qr-video" playsinline autoplay muted></video>
+        <div id="qr-reader"></div>
         <div id="qr-toast" class="qr-toast-oculto">
             <div id="qr-toast-titulo"></div>
             <div id="qr-toast-nombre"></div>
@@ -17,7 +16,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         </div>
         <div id="qr-controls">
             <button id="btn-pausa" type="button">Pausar escaner</button>
-            <button id="btn-reiniciar" type="button">Reiniciar camara</button>
         </div>
         <div id="qr-status">Iniciando camara...</div>
         <div id="qr-error" style="display:none;"></div>
@@ -26,23 +24,27 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
     css="""
     #qr-wrapper {
         width: 100%;
-        max-width: 320px;
+        max-width: 340px;
         margin: 0 auto;
         position: relative;
     }
-    #qr-video {
+    #qr-reader {
         border-radius: 8px;
         overflow: hidden;
         border: 2px solid #E65100;
         background: #000;
-        width: 100%;
-        height: 320px;
-        object-fit: cover;
-        display: block;
+        min-height: 260px;
+        aspect-ratio: 1 / 1;
     }
-    #qr-wrapper.pausado #qr-video {
+    #qr-reader video {
+        border-radius: 6px;
+        width: 100% !important;
+        height: 100% !important;
+        object-fit: cover !important;
+    }
+    #qr-wrapper.pausado #qr-reader {
         border-color: #2E7D32;
-        opacity: 0.75;
+        opacity: 0.8;
     }
 
     .qr-toast-oculto { display: none; }
@@ -51,8 +53,8 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         top: 12px;
         left: 50%;
         transform: translateX(-50%);
-        min-width: 240px;
-        max-width: 94%;
+        min-width: 220px;
+        max-width: 96%;
         padding: 12px 16px;
         border-radius: 12px;
         background: rgba(20, 20, 20, 0.94);
@@ -82,28 +84,22 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         font-size: 11px; font-weight: 800; text-transform: uppercase;
         letter-spacing: 0.14em; opacity: 0.85; margin-bottom: 4px;
     }
-    #qr-toast-nombre {
-        font-size: 17px; font-weight: 800; line-height: 1.2; letter-spacing: -0.01em;
-    }
-    #qr-toast-detalle {
-        font-size: 12px; opacity: 0.85; margin-top: 4px; line-height: 1.4;
-    }
+    #qr-toast-nombre { font-size: 17px; font-weight: 800; line-height: 1.2; letter-spacing: -0.01em; }
+    #qr-toast-detalle { font-size: 12px; opacity: 0.85; margin-top: 4px; line-height: 1.4; }
 
     #qr-controls {
         display: flex; gap: 8px; margin-top: 10px;
         justify-content: center; flex-wrap: wrap;
     }
     #qr-controls button {
-        background: #E65100; color: #FFFFFF; border: none;
-        border-radius: 6px; padding: 10px 18px;
-        font-size: 13px; font-weight: 600; cursor: pointer;
+        background: #E65100; color: #FFFFFF; border: none; border-radius: 6px;
+        padding: 10px 18px; font-size: 13px; font-weight: 600; cursor: pointer;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         transition: background 120ms ease;
     }
     #qr-controls button:hover { background: #BF360C; }
     #qr-controls button.pausado { background: #2E7D32; }
     #qr-controls button.pausado:hover { background: #1B5E20; }
-    #qr-controls button:disabled { background: #9E9E9E; cursor: not-allowed; }
 
     #qr-status {
         text-align: center; font-size: 13px; margin-top: 8px; color: #666;
@@ -115,29 +111,32 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         padding: 10px; border: 1px solid #C62828; border-radius: 6px; background: #f8d7da;
     }
+    #qr-reader button {
+        background: #E65100 !important; color: white !important; border: none !important;
+        border-radius: 6px !important; padding: 8px 16px !important;
+        font-weight: 600 !important; cursor: pointer !important; margin: 4px !important;
+    }
+    #qr-reader button:hover { background: #BF360C !important; }
+    #qr-reader select {
+        border-radius: 6px !important; padding: 6px 10px !important;
+        margin: 4px !important; border: 1px solid #ccc !important;
+    }
+    #qr-reader a { color: #E65100 !important; font-weight: 600 !important; }
     """,
     js="""
     export default function(component) {
         const { setTriggerValue } = component;
-
-        const DNI_REGEX = /\\b(\\d{8})\\b/;
-        const SCAN_INTERVAL_MS = 250;
-        const ANTI_REBOTE_MS = 1200;
-
-        let stream = null;
-        let detector = null;
-        let videoElement = null;
-        let scanLoop = null;
-        let ultimoDni = null;
-        let ultimoTimestampDni = 0;
+        let scanner = null;
         let iniciado = false;
         let pausado = false;
-        let polyfillCargado = false;
-        let intentosFallidos = 0;
-        const MAX_INTENTOS = 5;
+
+        // Anti-rebote: no emitir el mismo DNI en menos de 2.5s
+        const COOLDOWN_MS = 2500;
+        let ultimoDniEmitido = null;
+        let ultimoTimestampEmision = 0;
 
         // ============================================================
-        // AUDIO
+        // MOTOR DE AUDIO
         // ============================================================
         let audioCtx = null;
         function getAudioCtx() {
@@ -162,18 +161,26 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
             osc.start(t0); osc.stop(t0 + dur + 0.02);
         }
+
+        // PUNTUAL: DO -> MI -> SOL
         function sonidoPuntual() { _tono(523,0.10,'sine',0.40,0); _tono(659,0.10,'sine',0.40,0.10); _tono(784,0.15,'sine',0.40,0.20); }
+        // TARDANZA: dos notas descendentes graves
         function sonidoTardanza() { _tono(392,0.15,'sine',0.40,0); _tono(294,0.25,'sine',0.40,0.18); }
+        // DUPLICADO: buzz grave doble
         function sonidoDuplicado() { _tono(220,0.18,'square',0.45,0); _tono(220,0.18,'square',0.45,0.22); }
+        // ERROR: disonancia ascendente
         function sonidoError() {
             _tono(180,0.15,'sawtooth',0.45,0); _tono(250,0.15,'sawtooth',0.45,0.15);
             _tono(330,0.15,'sawtooth',0.45,0.30); _tono(440,0.25,'sawtooth',0.45,0.45);
         }
+        // BLOQUEADO: triple buzz grave
         function sonidoBloqueado() {
             _tono(160,0.15,'sawtooth',0.45,0); _tono(120,0.15,'sawtooth',0.45,0.18);
             _tono(90,0.30,'sawtooth',0.45,0.36);
         }
+        // INCIDENCIA: dos notas neutras
         function sonidoIncidencia() { _tono(523,0.10,'triangle',0.35,0); _tono(523,0.10,'triangle',0.35,0.15); }
+
         function reproducir(kind) {
             try {
                 getAudioCtx();
@@ -186,14 +193,16 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                     case "error":
                     default:            sonidoError();       break;
                 }
-            } catch (e) { console.error('[QR] reproducir:', e); }
+            } catch (e) { console.error('[QR] reproducir error:', e); }
         }
-        window.__qrFeedback = reproducir;
-        try { window.parent.__qrFeedback = reproducir; } catch (e) {}
 
-        function desbloquearAudio() { getAudioCtx(); }
-        document.addEventListener('touchstart', desbloquearAudio, { once: true });
-        document.addEventListener('click', desbloquearAudio, { once: true });
+        // Registrar en window propio Y en window.parent (asi funcionaba antes)
+        window.__qrFeedback = reproducir;
+        try {
+            window.parent.__qrFeedback = reproducir;
+        } catch (e) {
+            console.warn('[QR] no se pudo registrar en parent:', e);
+        }
 
         // ============================================================
         // UTILIDADES
@@ -209,31 +218,19 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             if (s) s.style.display = 'none';
             console.error('[QR]', t);
         }
-        function limpiarError() {
-            const e = document.getElementById('qr-error');
-            if (e) { e.textContent = ''; e.style.display = 'none'; }
-        }
-        function detenerCamara() {
-            if (scanLoop) { clearTimeout(scanLoop); scanLoop = null; }
-            if (stream) {
-                stream.getTracks().forEach(track => { try { track.stop(); } catch(e) {} });
-                stream = null;
-            }
-            if (videoElement) {
-                try {
-                    videoElement.pause();
-                    videoElement.srcObject = null;
-                    videoElement.src = '';
-                    videoElement.load();
-                } catch(e) {}
+        function destruirScanner() {
+            pausado = false;
+            if (scanner) {
+                try { scanner.clear(); } catch (e) {}
+                scanner = null;
             }
             iniciado = false;
-            ultimoDni = null;
-            ultimoTimestampDni = 0;
+            ultimoDniEmitido = null;
+            ultimoTimestampEmision = 0;
         }
 
         // ============================================================
-        // TOAST
+        // AVISO FLOTANTE
         // ============================================================
         let toastTimer = null;
         function mostrarToast(kind, nombre, detalle, titulo) {
@@ -255,7 +252,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         try { window.parent.__qrMostrarToast = mostrarToast; } catch (e) {}
 
         // ============================================================
-        // BOTONES
+        // BOTON PAUSA
         // ============================================================
         function actualizarBotonPausa() {
             const btn = document.getElementById('btn-pausa');
@@ -274,198 +271,176 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         function togglePausa() {
             if (!iniciado) return;
             if (pausado) {
+                try { scanner.resume(); } catch(e) {}
                 pausado = false;
-                setStatus('Camara activa. Apunta al codigo QR.');
+                setStatus('Camara activa.');
                 actualizarBotonPausa();
-                bucleEscaneo();
             } else {
+                try { scanner.pause(true); } catch(e) {}
                 pausado = true;
-                if (scanLoop) { clearTimeout(scanLoop); scanLoop = null; }
-                setStatus('Escaner PAUSADO. Presiona Reanudar para continuar.');
+                setStatus('Escaner PAUSADO. Presiona Reanudar.');
                 actualizarBotonPausa();
                 try { _tono(330, 0.12, 'sine', 0.30, 0); } catch(e) {}
             }
         }
-        function reiniciarCamara() {
-            const btnP = document.getElementById('btn-pausa');
-            const btnR = document.getElementById('btn-reiniciar');
-            if (btnP) btnP.disabled = true;
-            if (btnR) btnR.disabled = true;
-            setStatus('Reiniciando camara...');
-            pausado = false;
-            actualizarBotonPausa();
-            detenerCamara();
-            intentosFallidos = 0;
-            setTimeout(() => {
-                if (btnP) btnP.disabled = false;
-                if (btnR) btnR.disabled = false;
-                iniciarScanner();
-            }, 1500);
-        }
-        function conectarBotones() {
-            const btnP = document.getElementById('btn-pausa');
-            const btnR = document.getElementById('btn-reiniciar');
-            if (btnP && !btnP.__conectado) {
-                btnP.addEventListener('click', togglePausa);
-                btnP.__conectado = true;
-            }
-            if (btnR && !btnR.__conectado) {
-                btnR.addEventListener('click', reiniciarCamara);
-                btnR.__conectado = true;
+        function conectarBotonPausa() {
+            const btn = document.getElementById('btn-pausa');
+            if (btn && !btn.__conectado) {
+                btn.addEventListener('click', togglePausa);
+                btn.__conectado = true;
             }
         }
 
         // ============================================================
-        // POLYFILL
+        // SCANNER
         // ============================================================
-        function cargarPolyfill() {
-            return new Promise((resolve, reject) => {
-                if (polyfillCargado) { resolve(); return; }
-                if (typeof BarcodeDetector !== 'undefined') {
-                    polyfillCargado = true;
-                    resolve();
-                    return;
-                }
-                setStatus('Cargando motor de escaneo...');
-                const script = document.createElement('script');
-                script.src = 'https://cdn.jsdelivr.net/npm/@sec-ant/barcode-detector@1.3/dist/iife/side-effects.min.js';
-                script.async = true;
-                script.onload = () => { polyfillCargado = true; resolve(); };
-                script.onerror = () => { reject(new Error('No se pudo cargar polyfill.')); };
-                document.head.appendChild(script);
-            });
-        }
-
-        // ============================================================
-        // INICIAR
-        // ============================================================
-        async function iniciarScanner() {
+        function iniciarScanner() {
             if (iniciado) return;
-            limpiarError();
-            detenerCamara();
-            videoElement = document.getElementById('qr-video');
-            if (!videoElement) { setError('Contenedor de video no encontrado.'); return; }
-            conectarBotones();
-
-            try {
-                await cargarPolyfill();
-                if (typeof BarcodeDetector === 'undefined') {
-                    setError('Este navegador no soporta escaneo de codigos.');
-                    return;
-                }
-                detector = new BarcodeDetector({ formats: ['qr_code'] });
-
-                setStatus('Solicitando acceso a la camara...');
-                stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
-                    audio: false
-                });
-
-                videoElement.srcObject = stream;
-                videoElement.setAttribute('playsinline', 'true');
-                videoElement.setAttribute('muted', 'true');
-                await videoElement.play();
-
-                iniciado = true;
-                pausado = false;
-                intentosFallidos = 0;
-                setStatus('Camara activa. Apunta al codigo QR.');
-                actualizarBotonPausa();
-                bucleEscaneo();
-
-            } catch (err) {
-                console.error('[QR] Error al iniciar:', err);
-                detenerCamara();
-                intentosFallidos++;
-                const esNotReadable = err.name === 'NotReadableError' ||
-                                     (err.message && err.message.toLowerCase().includes('could not start'));
-                if (esNotReadable && intentosFallidos < MAX_INTENTOS) {
-                    setStatus('Camara ocupada. Reintentando en 2s... (' + intentosFallidos + '/' + MAX_INTENTOS + ')');
-                    setTimeout(() => { iniciarScanner(); }, 2000);
-                    return;
-                }
-                if (esNotReadable) {
-                    setError('No se pudo acceder a la camara. Presiona Reiniciar camara.');
-                } else if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-                    setError('Permiso de camara denegado.');
-                } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
-                    setError('No se encontro ninguna camara.');
-                } else {
-                    setError('Error: ' + (err.message || err.name));
-                }
+            if (typeof Html5QrcodeScanner === 'undefined') {
+                setError('Libreria QR no cargada.');
+                return;
             }
-        }
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                setError('Tu navegador no soporta camara, o no estas en HTTPS.');
+                return;
+            }
+            const reader = document.getElementById('qr-reader');
+            if (!reader) { setError('Contenedor qr-reader no existe.'); return; }
 
-        // ============================================================
-        // BUCLE
-        // ============================================================
-        function bucleEscaneo() {
-            if (!iniciado || pausado || !videoElement || !detector) return;
-            if (videoElement.readyState >= 2) {
-                detector.detect(videoElement)
-                    .then(barcodes => {
+            destruirScanner();
+            reader.innerHTML = '';
+            iniciado = true;
+            getAudioCtx();
+            conectarBotonPausa();
+
+            setTimeout(() => {
+                if (!iniciado) return;
+                scanner = new Html5QrcodeScanner(
+                    "qr-reader",
+                    {
+                        fps: 10,
+                        qrbox: { width: 250, height: 250 },
+                        aspectRatio: 1.0,
+                        rememberLastUsedCamera: true,
+                        videoConstraints: { facingMode: "environment" },
+                        supportedScanTypes: [Html5QrcodeScanType.SCAN_TYPE_CAMERA]
+                    },
+                    false
+                );
+
+                const onScanSuccess = (texto) => {
+                    try {
                         if (pausado) return;
-                        if (barcodes && barcodes.length > 0) {
-                            const codigo = barcodes[0];
-                            const texto = codigo.rawValue;
-                            const match = texto.match(DNI_REGEX);
-                            if (match) {
-                                const dni = match[1];
-                                const ahora = Date.now();
-                                if (dni === ultimoDni && (ahora - ultimoTimestampDni) < ANTI_REBOTE_MS) {
-                                    // ignorar rebote de frames
-                                } else {
-                                    ultimoDni = dni;
-                                    ultimoTimestampDni = ahora;
-                                    setStatus('QR detectado: ' + dni);
-                                    console.log('[QR] EMITIENDO DNI:', dni);
-                                    setTriggerValue("qr_dni", dni);
-                                }
-                            }
-                        }
-                    })
-                    .catch(err => { console.debug('[QR] Error deteccion:', err); });
-            }
-            if (!pausado) scanLoop = setTimeout(bucleEscaneo, SCAN_INTERVAL_MS);
+                        const m = texto.match(/\\b(\\d{8})\\b/);
+                        if (!m) return;
+                        const dni = m[1];
+                        const ahora = Date.now();
+                        const esMismoDni = (dni === ultimoDniEmitido);
+                        const dentroCooldown = (ahora - ultimoTimestampEmision) < COOLDOWN_MS;
+                        if (esMismoDni && dentroCooldown) return;
+                        ultimoDniEmitido = dni;
+                        ultimoTimestampEmision = ahora;
+                        setStatus('QR: ' + dni);
+                        setTriggerValue("qr_dni", dni);
+                    } catch (e) {
+                        console.error('[QR] onScanSuccess error:', e);
+                    }
+                };
+
+                let resultado;
+                try {
+                    resultado = scanner.render(onScanSuccess, () => {});
+                } catch (e) {
+                    setError('Error al iniciar: ' + ((e && e.message) || e));
+                    iniciado = false;
+                    return;
+                }
+
+                if (resultado && typeof resultado.then === 'function') {
+                    resultado
+                        .then(() => setStatus('Camara activa.'))
+                        .catch((e) => {
+                            setError('Error camara: ' + ((e && e.message) || e));
+                            iniciado = false;
+                        });
+                } else {
+                    setStatus('Camara activa.');
+                }
+            }, 500);
         }
 
         // ============================================================
         // VISIBILITY
         // ============================================================
+        function pausarScanner() {
+            if (!scanner || !iniciado || pausado) return;
+            try { scanner.pause(true); pausado = true; actualizarBotonPausa(); }
+            catch (e) { destruirScanner(); }
+        }
+        function reanudarScanner() {
+            if (!scanner || !iniciado) { iniciarScanner(); return; }
+            if (!pausado) return;
+            try { scanner.resume(); pausado = false; actualizarBotonPausa(); setStatus('Camara activa.'); }
+            catch (e) { destruirScanner(); iniciarScanner(); }
+        }
+
         document.addEventListener('visibilitychange', () => {
-            if (document.visibilityState === 'hidden') {
-                detenerCamara();
-                pausado = false;
-                actualizarBotonPausa();
-                setStatus('Camara en pausa.');
-            } else if (document.visibilityState === 'visible') {
-                if (!iniciado) {
-                    setTimeout(() => { if (!iniciado) iniciarScanner(); }, 1000);
-                }
-            }
+            if (document.visibilityState === 'hidden') pausarScanner();
+            else if (document.visibilityState === 'visible') reanudarScanner();
         });
-        window.addEventListener('beforeunload', detenerCamara);
+        window.addEventListener('blur', () => { if (document.visibilityState === 'hidden') pausarScanner(); });
+        window.addEventListener('focus', () => { if (document.visibilityState === 'visible') reanudarScanner(); });
 
         // ============================================================
-        // ARRANQUE
+        // CARGA DE LIBRERIA
         // ============================================================
-        setTimeout(() => {
-            conectarBotones();
-            iniciarScanner();
-        }, 500);
+        window.addEventListener('beforeunload', destruirScanner);
+
+        if (window.__qrV30Listo && typeof Html5QrcodeScanner !== 'undefined') { iniciarScanner(); return; }
+        if (window.__qrV30Cargando) {
+            let n = 0;
+            const t = setInterval(() => {
+                n++;
+                if (typeof Html5QrcodeScanner !== 'undefined') {
+                    clearInterval(t);
+                    window.__qrV30Listo = true; window.__qrV30Cargando = false;
+                    iniciarScanner();
+                } else if (n > 100) {
+                    clearInterval(t);
+                    window.__qrV30Cargando = false;
+                    setError('Timeout cargando libreria.');
+                }
+            }, 100);
+            return;
+        }
+        window.__qrV30Cargando = true;
+        const s = document.createElement('script');
+        s.src = 'https://unpkg.com/html5-qrcode';
+        s.async = true;
+        s.onload = () => {
+            window.__qrV30Listo = true;
+            window.__qrV30Cargando = false;
+            setTimeout(() => {
+                if (typeof Html5QrcodeScanner === 'undefined') {
+                    setError('Libreria cargada pero sin Html5QrcodeScanner.');
+                    return;
+                }
+                iniciarScanner();
+            }, 50);
+        };
+        s.onerror = () => {
+            window.__qrV30Cargando = false;
+            setError('Error al cargar html5-qrcode del CDN.');
+        };
+        document.head.appendChild(s);
     }
     """,
 )
 
 
 def qr_scanner(key="qr_scanner", on_scan=None, ultimo_mensaje=None):
-    """
-    Llama al componente. El DNI llega a traves de on_scan (callback)
-    cuando el usuario escanea un QR valido.
-    ultimo_mensaje: dict con kind/titulo/nombre/detalle para el toast de arriba.
-    """
     if on_scan is None:
-        on_scan = lambda *args, **kwargs: None
+        on_scan = lambda: None
 
     if ultimo_mensaje:
         try:
