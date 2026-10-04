@@ -3863,6 +3863,7 @@ def _procesar_escaneo(dni):
         descripcion_breve=desc_breve
     )
 
+    # ------- Determinar sonido -------
     if not ok and tipo == "ERROR":
         if "ya registro" in msg or "ya tiene" in msg:
             sonido = "duplicado"
@@ -3873,7 +3874,7 @@ def _procesar_escaneo(dni):
     elif ok and tipo == "TARDANZA":
         sonido = "tardanza"
     elif ok and tipo == "INCIDENCIA":
-        sonido = "error"
+        sonido = "incidencia"
     elif ok:
         sonido = "puntual"
     else:
@@ -3891,7 +3892,6 @@ def _procesar_escaneo(dni):
     st.session_state["_qr_sonido_pendiente"] = {
         "kind": sonido, "nonce": contador, "ts": time.time(),
     }
-
 
 def _render_mensaje_qr(msg):
     tipo = msg["tipo"]
@@ -4374,134 +4374,93 @@ def escaner_qr_continuo(key="qr_scanner"):
     )
 
     def _on_scan():
+        # El simple hecho de declarar el callback ya registra el listener
+        # del trigger. El cambio de valor fuerza un rerun automatico.
         pass
 
     mount_id = st.session_state.get("_qr_mount_id", 0)
     result = qr_scanner(key="qr_" + key + "_" + str(mount_id), on_scan=_on_scan)
 
+    # ------------------------------------------------------------
+    # 1) Detectar nuevo DNI y procesarlo
+    # ------------------------------------------------------------
     if result is not None and getattr(result, "qr_dni", None):
-        dni = result.qr_dni
+        dni = str(result.qr_dni).strip()
         ult = st.session_state.get("_ultimo_qr_scan", {})
-        if not (ult.get("dni") == dni and (time.time() - ult.get("ts", 0)) < 1):
+        es_nuevo = not (ult.get("dni") == dni and (time.time() - ult.get("ts", 0)) < 1.2)
+        if es_nuevo and re.fullmatch(r"\d{8}", dni):
             st.session_state["_ultimo_qr_scan"] = {"dni": dni, "ts": time.time()}
             _procesar_escaneo(dni)
+            # Forzamos rerun para que la UI (avisos, sonido) se actualice ya
+            st.rerun()
 
-    # Sonido: enviar postMessage a los iframes
+    # ------------------------------------------------------------
+    # 2) SONIDO: usar <audio> embebido, no postMessage
+    #    Se genera un beep con Web Audio API en un iframe pequeño.
+    #    Se dispara solo cuando hay un nuevo nonce.
+    # ------------------------------------------------------------
     sp = st.session_state.get("_qr_sonido_pendiente")
     if sp:
-        kind_js = sp["kind"]
-        nonce = sp["nonce"]
+        nonce = sp.get("nonce", 0)
+        kind_js = sp.get("kind", "error")
         ultimo_nonce = st.session_state.get("_ultimo_nonce_sonado", 0)
         if nonce != ultimo_nonce:
             st.session_state["_ultimo_nonce_sonado"] = nonce
+            # Este iframe es del mismo origen de la app, así que el audio
+            # no se bloquea por sandbox. Solo usa Web Audio API.
             st.components.v1.html(f"""
                 <script>
                 (function() {{
                     const KIND = '{kind_js}';
-                    let tries = 0;
-                    const disparar = () => {{
-                        tries++;
-                        let ok = false;
+                    function tono(freq, dur, tipo, vol, delay) {{
                         try {{
-                            const frames = document.querySelectorAll('iframe');
-                            for (const f of frames) {{
-                                try {{
-                                    if (f.contentWindow) {{
-                                        f.contentWindow.postMessage({{ type: 'qr_sound', kind: KIND }}, '*');
-                                        ok = true;
-                                    }}
-                                }} catch(e) {{}}
-                            }}
+                            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                            const t0 = ctx.currentTime + (delay || 0);
+                            const osc = ctx.createOscillator();
+                            const g = ctx.createGain();
+                            osc.connect(g); g.connect(ctx.destination);
+                            osc.type = tipo || 'sine';
+                            osc.frequency.setValueAtTime(freq, t0);
+                            g.gain.setValueAtTime(0, t0);
+                            g.gain.linearRampToValueAtTime(vol || 0.35, t0 + 0.015);
+                            g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+                            osc.start(t0); osc.stop(t0 + dur + 0.02);
                         }} catch(e) {{}}
-                        if (!ok && tries < 60) setTimeout(disparar, 100);
-                    }};
-                    disparar();
+                    }}
+                    function sonidoPuntual()    {{ tono(523,0.10,'sine',0.40,0); tono(659,0.10,'sine',0.40,0.10); tono(784,0.15,'sine',0.40,0.20); }}
+                    function sonidoTardanza()   {{ tono(392,0.15,'sine',0.40,0); tono(294,0.25,'sine',0.40,0.18); }}
+                    function sonidoDuplicado()  {{ tono(220,0.18,'square',0.45,0); tono(220,0.18,'square',0.45,0.22); }}
+                    function sonidoError()      {{ tono(180,0.15,'sawtooth',0.45,0); tono(250,0.15,'sawtooth',0.45,0.15); tono(330,0.15,'sawtooth',0.45,0.30); tono(440,0.25,'sawtooth',0.45,0.45); }}
+                    function sonidoBloqueado()  {{ tono(160,0.15,'sawtooth',0.45,0); tono(120,0.15,'sawtooth',0.45,0.18); tono(90,0.30,'sawtooth',0.45,0.36); }}
+                    function sonidoIncidencia() {{ tono(523,0.10,'triangle',0.35,0); tono(523,0.10,'triangle',0.35,0.15); }}
+                    switch (KIND) {{
+                        case 'puntual':     sonidoPuntual();     break;
+                        case 'tardanza':    sonidoTardanza();    break;
+                        case 'duplicado':   sonidoDuplicado();   break;
+                        case 'bloqueado':   sonidoBloqueado();   break;
+                        case 'incidencia':  sonidoIncidencia();  break;
+                        default:            sonidoError();       break;
+                    }}
                 }})();
                 </script>
             """, height=0)
 
-    # Toast: enviar postMessage con el nombre del alumno
+    # ------------------------------------------------------------
+    # 3) AVISO VISUAL: renderizado directamente en Streamlit
+    #    (sin postMessage, sin depender del iframe).
+    # ------------------------------------------------------------
     mensajes = st.session_state.get("_qr_mensajes", [])
     if mensajes:
         m = mensajes[0]
-        if (time.time() - m.get("ts", 0)) < 6:
-            tipo = m.get("tipo", "ERROR")
-            msg_txt = m.get("mensaje", "")
-            extra = m.get("extra") or {}
-            alumno = extra.get("alumno") or {}
-            if alumno:
-                nombre = (alumno.get("apellido_paterno", "") + " " +
-                          (alumno.get("apellido_materno") or "") + ", " +
-                          alumno.get("nombres", "")).strip(", ")
-                detalle = (alumno.get("grado", "") + " " + alumno.get("seccion", "") +
-                           " - " + alumno.get("turno", ""))
-            else:
-                nombre = "(no identificado)"
-                detalle = msg_txt
-
-            if tipo == "PUNTUAL":
-                kind = "puntual"; titulo = "PUNTUAL"
-            elif tipo == "TARDANZA":
-                kind = "tardanza"; titulo = "TARDANZA"
-                accion = extra.get("accion", "")
-                if accion:
-                    detalle = detalle + " - " + accion
-            elif tipo == "BLOQUEADO":
-                kind = "bloqueado"; titulo = "BLOQUEADO"
-                detalle = "Retener y llevar a TOECE"
-            elif tipo == "INCIDENCIA":
-                kind = "incidencia"; titulo = "INCIDENCIA REPORTADA"
-            elif tipo == "REFORZAMIENTO":
-                kind = "puntual"; titulo = "REFORZAMIENTO"
-            else:
-                if "ya registro" in msg_txt or "ya tiene" in msg_txt:
-                    kind = "duplicado"; titulo = "YA REGISTRADO"
-                elif "DNI no encontrado" in msg_txt:
-                    kind = "error"; titulo = "NO ENCONTRADO"
-                else:
-                    kind = "error"; titulo = "AVISO"
-
-            toast_nonce_key = "_ultimo_toast_nonce"
-            toast_nonce = int(m.get("ts", 0) * 1000)
-            if st.session_state.get(toast_nonce_key) != toast_nonce:
-                st.session_state[toast_nonce_key] = toast_nonce
-                st.components.v1.html(f"""
-                    <script>
-                    (function() {{
-                        const DATA = {{
-                            type: 'qr_toast',
-                            kind: '{kind}',
-                            nombre: {repr(nombre)},
-                            detalle: {repr(detalle)},
-                            titulo: '{titulo}'
-                        }};
-                        let tries = 0;
-                        const disparar = () => {{
-                            tries++;
-                            let ok = false;
-                            try {{
-                                const frames = document.querySelectorAll('iframe');
-                                for (const f of frames) {{
-                                    try {{
-                                        if (f.contentWindow) {{
-                                            f.contentWindow.postMessage(DATA, '*');
-                                            ok = true;
-                                        }}
-                                    }} catch(e) {{}}
-                                }}
-                            }} catch(e) {{}}
-                            if (!ok && tries < 60) setTimeout(disparar, 100);
-                        }};
-                        disparar();
-                    }})();
-                    </script>
-                """, height=0)
-
-    # Lista de ultimos escaneos debajo del escaner
-    if st.session_state.get("_qr_mensajes"):
-        st.markdown('<div class="scan-ultimos">Ultimos escaneos</div>', unsafe_allow_html=True)
-        for msg in st.session_state["_qr_mensajes"][:5]:
-            _render_mensaje_qr(msg)
+        # Solo mostrar si es reciente (< 8 segundos)
+        if (time.time() - m.get("ts", 0)) < 8:
+            _render_mensaje_qr(m)
+        # Lista de ultimos escaneos
+        if len(mensajes) > 1:
+            st.markdown('<div class="scan-ultimos">Ultimos escaneos</div>',
+                        unsafe_allow_html=True)
+            for msg in mensajes[1:6]:
+                _render_mensaje_qr(msg)
 def _puerta_manual(usuario, fecha):
     if es_fin_de_semana():
         st.warning("Hoy no es dia laboral.")
