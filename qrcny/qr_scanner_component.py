@@ -1,11 +1,12 @@
 # qr_scanner_component.py
 # BarcodeDetector API + Polyfill ZXing.
-# Todas las funciones: sonido, boton pausa, video cuadrado, aviso flotante,
-# protecciones contra NotReadableError, y listener postMessage para sonidos.
+# Escaner QR en vivo con pausa, sonido, aviso flotante y protecciones
+# contra NotReadableError. Incluye retraso de arranque para evitar que
+# Streamlit descarte el primer trigger durante la limpieza interna.
 import streamlit as st
 
 QR_SCANNER_COMPONENT = st.components.v2.component(
-    name="mi_qr_scanner_v40",
+    name="mi_qr_scanner_v41",
     isolate_styles=False,
     html="""
     <div id="qr-wrapper">
@@ -113,6 +114,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         const DNI_REGEX = /\\b(\\d{8})\\b/;
         const SCAN_INTERVAL_MS = 250;
         const ANTI_REBOTE_MS = 1200;
+        const ARRANQUE_ESPERA_MS = 1500;   // <-- evita perder el primer trigger
 
         let stream = null;
         let detector = null;
@@ -124,6 +126,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         let pausado = false;
         let polyfillCargado = false;
         let intentosFallidos = 0;
+        let arranqueTimestamp = 0;
         const MAX_INTENTOS = 5;
 
         // ============================================================
@@ -219,21 +222,29 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             const e = document.getElementById('qr-error');
             if (e) { e.textContent = ''; e.style.display = 'none'; }
         }
+
+        // Limpieza total: libera tracks, borra srcObject, resetea video
         function detenerCamara() {
             if (scanLoop) { clearTimeout(scanLoop); scanLoop = null; }
             if (stream) {
-                stream.getTracks().forEach(track => { try { track.stop(); } catch(e) {} });
+                try {
+                    stream.getTracks().forEach(track => {
+                        try { track.stop(); } catch(e) {}
+                    });
+                } catch(e) {}
                 stream = null;
             }
             if (videoElement) {
                 try {
                     videoElement.pause();
                     videoElement.srcObject = null;
-                    videoElement.src = '';
+                    videoElement.removeAttribute('src');
                     videoElement.load();
                 } catch(e) {}
             }
             iniciado = false;
+            pausado = false;
+            arranqueTimestamp = 0;
             ultimoDni = null;
             ultimoTimestampDni = 0;
         }
@@ -354,6 +365,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                 iniciado = true;
                 pausado = false;
                 intentosFallidos = 0;
+                arranqueTimestamp = Date.now();   // <-- marca de arranque
                 setStatus('Camara activa. Apunta al codigo QR.');
                 actualizarBotonPausa();
                 bucleEscaneo();
@@ -370,7 +382,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                     return;
                 }
                 if (esNotReadable) {
-                    setError('No se pudo acceder a la camara.');
+                    setError('No se pudo acceder a la camara. Cierra otras pestanas que la usen.');
                 } else if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
                     setError('Permiso de camara denegado.');
                 } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
@@ -390,6 +402,9 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                 detector.detect(videoElement)
                     .then(barcodes => {
                         if (pausado) return;
+                        // NO disparar triggers durante los primeros ms del arranque
+                        if (Date.now() - arranqueTimestamp < ARRANQUE_ESPERA_MS) return;
+
                         if (barcodes && barcodes.length > 0) {
                             const codigo = barcodes[0];
                             const texto = codigo.rawValue;
@@ -419,7 +434,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'hidden') {
                 detenerCamara();
-                pausado = false;
                 actualizarBotonPausa();
                 setStatus('Camara en pausa.');
             } else if (document.visibilityState === 'visible') {
