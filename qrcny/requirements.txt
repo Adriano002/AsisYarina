@@ -7,3 +7,5 @@ qrcode
 pillow
 reportlab
 openpyxl
+streamlit-drawable-canvas
+streamlit-autorefresh
