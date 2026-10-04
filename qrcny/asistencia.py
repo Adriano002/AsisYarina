@@ -3900,8 +3900,19 @@ def escaner_qr_continuo(key="qr_scanner"):
         unsafe_allow_html=True
     )
 
-    def _on_scan():
-        pass
+    # Callback: aqui llega el DNI escaneado desde el componente
+    def _on_scan(dni_nuevo=None, *args, **kwargs):
+        if not dni_nuevo:
+            return
+        dni_str = str(dni_nuevo).strip()
+        if not re.fullmatch(r"\d{8}", dni_str):
+            return
+        ult = st.session_state.get("_ultimo_qr_scan", {})
+        if (ult.get("dni") == dni_str and
+                (time.time() - ult.get("ts", 0)) < 1):
+            return
+        st.session_state["_ultimo_qr_scan"] = {"dni": dni_str, "ts": time.time()}
+        _procesar_escaneo(dni_str)
 
     key_full = "qr_scanner_persistente"
 
@@ -3963,16 +3974,10 @@ def escaner_qr_continuo(key="qr_scanner"):
                 "extra": extra,
             }
 
-    result = qr_scanner(key=key_full, on_scan=_on_scan, ultimo_mensaje=ultimo_mensaje)
+    # Llamar al componente. El DNI llega via _on_scan.
+    qr_scanner(key=key_full, on_scan=_on_scan, ultimo_mensaje=ultimo_mensaje)
 
-    if result is not None and getattr(result, "qr_dni", None):
-        dni = result.qr_dni
-        ult = st.session_state.get("_ultimo_qr_scan", {})
-        if not (ult.get("dni") == dni and (time.time() - ult.get("ts", 0)) < 1):
-            st.session_state["_ultimo_qr_scan"] = {"dni": dni, "ts": time.time()}
-            _procesar_escaneo(dni)
-
-    # Sonido
+    # Sonido: disparar el sonido correspondiente
     sp = st.session_state.get("_qr_sonido_pendiente")
     if sp and (time.time() - sp.get("ts", 0)) < 30:
         kind_js = sp["kind"]
@@ -3980,7 +3985,6 @@ def escaner_qr_continuo(key="qr_scanner"):
         st.components.v1.html(f"""
             <script>
             (function() {{
-                const NONCE = {nonce};
                 let tries = 0;
                 const disparar = () => {{
                     tries++;
@@ -4010,7 +4014,7 @@ def escaner_qr_continuo(key="qr_scanner"):
         """, height=0)
         st.session_state.pop("_qr_sonido_pendiente", None)
 
-    # Lista de los ultimos escaneos debajo del escaner (como antes)
+    # Lista de ultimos escaneos debajo del escaner
     if st.session_state.get("_qr_mensajes"):
         st.markdown('<div class="scan-ultimos">Ultimos escaneos</div>', unsafe_allow_html=True)
         for msg in st.session_state["_qr_mensajes"][:5]:
