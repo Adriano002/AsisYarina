@@ -3903,9 +3903,9 @@ def escaner_qr_continuo(key="qr_scanner"):
     def _on_scan():
         pass
 
-    vista_actual = st.session_state.get("menu", "default")
-    mount_id = st.session_state.get("_qr_mount_id", 0)
-    key_full = "qr_" + str(vista_actual) + "_" + str(mount_id) + "_" + key
+    # Clave fija para que el componente no se desmonte al cambiar de vista.
+    # Esto evita que la camara se muera al navegar entre pantallas.
+    key_full = "qr_scanner_persistente"
 
     result = qr_scanner(key=key_full, on_scan=_on_scan)
 
