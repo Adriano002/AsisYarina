@@ -1,13 +1,14 @@
 # qr_scanner_component.py
-# v18 original (html5-qrcode) + arreglo de pestana.
+# v18 original (html5-qrcode) + arreglo de pestana + input oculto para sonido.
 import streamlit as st
 
 QR_SCANNER_COMPONENT = st.components.v2.component(
-    name="mi_qr_scanner_v34",
+    name="mi_qr_scanner_v35",
     isolate_styles=False,
     html="""
     <div id="qr-wrapper">
         <div id="qr-reader"></div>
+        <input type="hidden" id="qr-sound-trigger" value="">
         <div id="qr-status">Iniciando camara...</div>
         <div id="qr-error" style="display:none;"></div>
     </div>
@@ -167,6 +168,34 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             console.warn('[QR] no se pudo registrar en parent:', e);
         }
 
+        // ============================================================
+        // LISTENER DEL INPUT OCULTO PARA SONIDOS DESDE PYTHON
+        // ============================================================
+        function conectarSoundTrigger() {
+            const input = document.getElementById('qr-sound-trigger');
+            if (!input || input.__conectado) return;
+            input.__conectado = true;
+            input.addEventListener('change', () => {
+                const kind = input.value;
+                if (kind) {
+                    reproducir(kind);
+                    input.value = '';
+                }
+            });
+            // Observer por si Python cambia el value sin disparar change
+            const obs = new MutationObserver(() => {
+                const kind = input.value;
+                if (kind) {
+                    reproducir(kind);
+                    input.value = '';
+                }
+            });
+            obs.observe(input, { attributes: true, attributeFilter: ['value'] });
+        }
+        setTimeout(conectarSoundTrigger, 100);
+        setTimeout(conectarSoundTrigger, 500);
+        setTimeout(conectarSoundTrigger, 1500);
+
         function desbloquearAudio() { getAudioCtx(); }
         document.addEventListener('touchstart', desbloquearAudio, { once: true });
         document.addEventListener('click', desbloquearAudio, { once: true });
@@ -189,8 +218,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             const e = document.getElementById('qr-error');
             if (e) { e.textContent = ''; e.style.display = 'none'; }
         }
-
-        // Liberar todos los tracks de video activos (anti NotReadableError)
         function liberarCamara() {
             try {
                 document.querySelectorAll('video').forEach(v => {
@@ -205,7 +232,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                 });
             } catch (e) {}
         }
-
         function destruirScanner() {
             pausado = false;
             if (scanner) {
@@ -244,6 +270,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             reader.innerHTML = '';
             iniciado = true;
             getAudioCtx();
+            conectarSoundTrigger();
 
             setTimeout(() => {
                 if (!iniciado) return;
@@ -322,7 +349,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         }
 
         // ============================================================
-        // VISIBILITY - DESTRUIR al ocultar, REINICIAR al volver
+        // VISIBILITY
         // ============================================================
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'hidden') {
@@ -348,34 +375,34 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         // ============================================================
         // CARGA DE LIBRERIA
         // ============================================================
-        if (window.__qrV34Listo && typeof Html5QrcodeScanner !== 'undefined') {
+        if (window.__qrV35Listo && typeof Html5QrcodeScanner !== 'undefined') {
             iniciarScanner();
             return;
         }
-        if (window.__qrV34Cargando) {
+        if (window.__qrV35Cargando) {
             let n = 0;
             const t = setInterval(() => {
                 n++;
                 if (typeof Html5QrcodeScanner !== 'undefined') {
                     clearInterval(t);
-                    window.__qrV34Listo = true;
-                    window.__qrV34Cargando = false;
+                    window.__qrV35Listo = true;
+                    window.__qrV35Cargando = false;
                     iniciarScanner();
                 } else if (n > 100) {
                     clearInterval(t);
-                    window.__qrV34Cargando = false;
+                    window.__qrV35Cargando = false;
                     setError('Timeout cargando libreria.');
                 }
             }, 100);
             return;
         }
-        window.__qrV34Cargando = true;
+        window.__qrV35Cargando = true;
         const s = document.createElement('script');
         s.src = 'https://unpkg.com/html5-qrcode';
         s.async = true;
         s.onload = () => {
-            window.__qrV34Listo = true;
-            window.__qrV34Cargando = false;
+            window.__qrV35Listo = true;
+            window.__qrV35Cargando = false;
             setTimeout(() => {
                 if (typeof Html5QrcodeScanner === 'undefined') {
                     setError('Libreria cargada pero sin Html5QrcodeScanner.');
@@ -385,7 +412,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             }, 50);
         };
         s.onerror = () => {
-            window.__qrV34Cargando = false;
+            window.__qrV35Cargando = false;
             setError('Error al cargar html5-qrcode del CDN.');
         };
         document.head.appendChild(s);
