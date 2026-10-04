@@ -3818,14 +3818,34 @@ def _puerta_escanear(usuario, fecha):
     escaner_qr_continuo(key="puerta_qr")
 
 def _render_mensaje_qr(msg):
-    tipo = msg["tipo"]
-    mensaje = msg["mensaje"]
-    clase = {"PUNTUAL": "qr-puntual", "TARDANZA": "qr-tardanza",
-             "REFORZAMIENTO": "qr-refuerzo", "BLOQUEADO": "qr-bloqueado",
-             "INCIDENCIA": "qr-refuerzo", "ERROR": "qr-error"}.get(tipo, "qr-error")
+    tipo = msg.get("tipo", "ERROR")
+    mensaje = msg.get("mensaje", "")
+    extra = msg.get("extra") or {}
+    alumno = extra.get("alumno") or {}
+
+    # Nombre del alumno si está disponible
+    if alumno:
+        nombre = (alumno.get("apellido_paterno", "") + " " +
+                  (alumno.get("apellido_materno") or "") + ", " +
+                  alumno.get("nombres", "")).strip(", ")
+        detalle_extra = (alumno.get("grado", "") + " " +
+                         alumno.get("seccion", "") + " - " +
+                         alumno.get("turno", ""))
+    else:
+        nombre = ""
+        detalle_extra = ""
+
+    clase = {
+        "PUNTUAL":       "qr-puntual",
+        "TARDANZA":      "qr-tardanza",
+        "REFORZAMIENTO": "qr-refuerzo",
+        "BLOQUEADO":     "qr-bloqueado",
+        "INCIDENCIA":    "qr-refuerzo",
+        "ERROR":         "qr-error",
+    }.get(tipo, "qr-error")
 
     if tipo == "TARDANZA":
-        acc = (msg.get("extra") or {}).get("accion")
+        acc = extra.get("accion")
         if acc == ACC_DERIVADO:
             mensaje += " -> Derivar a TOECE"
             clase = "qr-derivado"
@@ -3833,12 +3853,23 @@ def _render_mensaje_qr(msg):
             mensaje += " -> Retener hasta apoderado"
             clase = "qr-retenido"
 
+    # Construcción del HTML del aviso
+    html_nombre = ""
+    if nombre:
+        html_nombre = ('<div style="font-size:16px;font-weight:800;'
+                       'margin-bottom:4px;">' + nombre + '</div>')
+    html_detalle = ""
+    if detalle_extra:
+        html_detalle = ('<div style="font-size:12px;opacity:0.85;'
+                        'margin-bottom:4px;">' + detalle_extra + '</div>')
+
     st.markdown(
-        '<div class="qr-msg ' + clase + '"><div class="qr-texto">' +
-        mensaje + '</div></div>',
+        '<div class="qr-msg ' + clase + '">'
+        + html_nombre + html_detalle +
+        '<div class="qr-texto">' + mensaje + '</div>'
+        '</div>',
         unsafe_allow_html=True
     )
-
 
 def _procesar_escaneo(dni):
     u = st.session_state.get("user")
