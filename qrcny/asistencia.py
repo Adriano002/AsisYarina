@@ -3903,11 +3903,63 @@ def escaner_qr_continuo(key="qr_scanner"):
     def _on_scan():
         pass
 
-    # Clave fija para que el componente no se desmonte al cambiar de vista.
-    # Esto evita que la camara se muera al navegar entre pantallas.
     key_full = "qr_scanner_persistente"
 
-    result = qr_scanner(key=key_full, on_scan=_on_scan)
+    ultimo_mensaje = None
+    mensajes = st.session_state.get("_qr_mensajes", [])
+    if mensajes:
+        m = mensajes[0]
+        if (time.time() - m.get("ts", 0)) < 6:
+            tipo = m.get("tipo", "ERROR")
+            msg_txt = m.get("mensaje", "")
+            extra = m.get("extra") or {}
+            alumno = extra.get("alumno") or {}
+
+            if alumno:
+                nombre = (alumno.get("apellido_paterno", "") + " " +
+                          (alumno.get("apellido_materno") or "") + ", " +
+                          alumno.get("nombres", "")).strip(", ")
+                detalle = (alumno.get("grado", "") + " " +
+                           alumno.get("seccion", "") + " - " +
+                           alumno.get("turno", ""))
+            else:
+                nombre = "(no identificado)"
+                detalle = msg_txt
+
+            if tipo == "PUNTUAL":
+                kind = "puntual"; titulo = "PUNTUAL"
+            elif tipo == "TARDANZA":
+                kind = "tardanza"; titulo = "TARDANZA"
+                accion = extra.get("accion", "")
+                if accion:
+                    detalle = detalle + " - " + accion
+            elif tipo == "BLOQUEADO":
+                kind = "bloqueado"; titulo = "BLOQUEADO"
+                detalle = "Retener y llevar a TOECE"
+            elif tipo == "INCIDENCIA":
+                kind = "incidencia"; titulo = "INCIDENCIA REPORTADA"
+            elif tipo == "REFORZAMIENTO":
+                kind = "puntual"; titulo = "REFORZAMIENTO"
+            else:
+                if "ya registro" in msg_txt or "ya tiene" in msg_txt:
+                    kind = "duplicado"; titulo = "YA REGISTRADO"
+                elif "DNI no encontrado" in msg_txt:
+                    kind = "error"; titulo = "NO ENCONTRADO"
+                elif "Sin ventana" in msg_txt:
+                    kind = "error"; titulo = "FUERA DE VENTANA"
+                elif "Feriado" in msg_txt:
+                    kind = "error"; titulo = "FERIADO"
+                else:
+                    kind = "error"; titulo = "AVISO"
+
+            ultimo_mensaje = {
+                "kind": kind,
+                "titulo": titulo,
+                "nombre": nombre,
+                "detalle": detalle
+            }
+
+    result = qr_scanner(key=key_full, on_scan=_on_scan, ultimo_mensaje=ultimo_mensaje)
 
     if result is not None and getattr(result, "qr_dni", None):
         dni = result.qr_dni
@@ -3957,7 +4009,6 @@ def escaner_qr_continuo(key="qr_scanner"):
         st.markdown('<div class="scan-ultimos">Ultimos escaneos</div>', unsafe_allow_html=True)
         for msg in st.session_state["_qr_mensajes"][:5]:
             _render_mensaje_qr(msg)
-
 
 def _puerta_manual(usuario, fecha):
     if es_fin_de_semana():
