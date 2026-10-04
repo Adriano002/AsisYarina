@@ -3893,6 +3893,28 @@ def _procesar_escaneo(dni):
     }
 
 
+def _render_mensaje_qr(msg):
+    tipo = msg["tipo"]
+    mensaje = msg["mensaje"]
+    clase = {"PUNTUAL": "qr-puntual", "TARDANZA": "qr-tardanza",
+             "REFORZAMIENTO": "qr-refuerzo", "BLOQUEADO": "qr-bloqueado",
+             "INCIDENCIA": "qr-refuerzo", "ERROR": "qr-error"}.get(tipo, "qr-error")
+
+    if tipo == "TARDANZA":
+        acc = (msg.get("extra") or {}).get("accion")
+        if acc == ACC_DERIVADO:
+            mensaje += " -> Derivar a TOECE"
+            clase = "qr-derivado"
+        elif acc == ACC_RETENIDO:
+            mensaje += " -> Retener hasta apoderado"
+            clase = "qr-retenido"
+
+    st.markdown(
+        '<div class="qr-msg ' + clase + '"><div class="qr-texto">' +
+        mensaje + '</div></div>',
+        unsafe_allow_html=True
+    )
+
 def escaner_qr_continuo(key="qr_scanner"):
     st.markdown(
         '<div class="scan-header"><div class="scan-titulo">Escaneo QR</div>'
@@ -3900,19 +3922,20 @@ def escaner_qr_continuo(key="qr_scanner"):
         unsafe_allow_html=True
     )
 
-    key_full = "qr_scanner_persistente"
+    def _on_scan():
+        pass
 
-    result = qr_scanner(key=key_full, on_scan=lambda: None)
+    mount_id = st.session_state.get("_qr_mount_id", 0)
+    result = qr_scanner(key="qr_" + key + "_" + str(mount_id), on_scan=_on_scan)
 
     if result is not None and getattr(result, "qr_dni", None):
-        dni = str(result.qr_dni).strip()
-        if re.fullmatch(r"\d{8}", dni):
-            ult = st.session_state.get("_ultimo_qr_scan", {})
-            if not (ult.get("dni") == dni and (time.time() - ult.get("ts", 0)) < 1):
-                st.session_state["_ultimo_qr_scan"] = {"dni": dni, "ts": time.time()}
-                _procesar_escaneo(dni)
+        dni = result.qr_dni
+        ult = st.session_state.get("_ultimo_qr_scan", {})
+        if not (ult.get("dni") == dni and (time.time() - ult.get("ts", 0)) < 1):
+            st.session_state["_ultimo_qr_scan"] = {"dni": dni, "ts": time.time()}
+            _procesar_escaneo(dni)
 
-    # Sonido: inyectar el kind en el input oculto del iframe del componente
+    # Sonido: enviar postMessage a los iframes del componente
     sp = st.session_state.get("_qr_sonido_pendiente")
     if sp:
         kind_js = sp["kind"]
@@ -3932,26 +3955,13 @@ def escaner_qr_continuo(key="qr_scanner"):
                             const frames = document.querySelectorAll('iframe');
                             for (const f of frames) {{
                                 try {{
-                                    const doc = f.contentDocument || f.contentWindow.document;
-                                    if (!doc) continue;
-                                    const input = doc.getElementById('qr-sound-trigger');
-                                    if (input) {{
-                                        input.value = KIND;
-                                        input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                    if (f.contentWindow) {{
+                                        f.contentWindow.postMessage({{ type: 'qr_sound', kind: KIND }}, '*');
                                         ok = true;
-                                        break;
                                     }}
                                 }} catch(e) {{}}
                             }}
                         }} catch(e) {{}}
-                        if (!ok) {{
-                            try {{
-                                if (window.parent && typeof window.parent.__qrFeedback === 'function') {{
-                                    window.parent.__qrFeedback(KIND);
-                                    ok = true;
-                                }}
-                            }} catch(e) {{}}
-                        }}
                         if (!ok && tries < 60) setTimeout(disparar, 100);
                     }};
                     disparar();
