@@ -1,10 +1,10 @@
 # qr_scanner_component.py
-# Componente QR con BarcodeDetector API + Polyfill ZXing.
-# Video cuadrado. Boton de pausa. Sistema de audio.
+# BarcodeDetector + Polyfill ZXing.
+# Puente por URL: el DNI se escribe en la URL del padre, Python lo lee con st.query_params.
 import streamlit as st
 
 QR_SCANNER_COMPONENT = st.components.v2.component(
-    name="mi_qr_scanner_v32",
+    name="mi_qr_scanner_v33",
     isolate_styles=False,
     html="""
     <div id="qr-wrapper">
@@ -17,34 +17,16 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
     </div>
     """,
     css="""
-    #qr-wrapper {
-        width: 100%;
-        max-width: 320px;
-        margin: 0 auto;
-        position: relative;
-    }
+    #qr-wrapper { width: 100%; max-width: 320px; margin: 0 auto; position: relative; }
     #qr-video {
-        border-radius: 8px;
-        overflow: hidden;
-        border: 2px solid #E65100;
-        background: #000;
-        width: 100%;
-        height: 320px;
-        object-fit: cover;
-        display: block;
+        border-radius: 8px; overflow: hidden; border: 2px solid #E65100;
+        background: #000; width: 100%; height: 320px; object-fit: cover; display: block;
     }
-    #qr-wrapper.pausado #qr-video {
-        border-color: #2E7D32;
-        opacity: 0.8;
-    }
-    #qr-controls {
-        display: flex; gap: 8px; margin-top: 10px;
-        justify-content: center; flex-wrap: wrap;
-    }
+    #qr-wrapper.pausado #qr-video { border-color: #2E7D32; opacity: 0.8; }
+    #qr-controls { display: flex; gap: 8px; margin-top: 10px; justify-content: center; flex-wrap: wrap; }
     #qr-controls button {
-        background: #E65100; color: #FFFFFF; border: none;
-        border-radius: 6px; padding: 10px 18px;
-        font-size: 13px; font-weight: 600; cursor: pointer;
+        background: #E65100; color: #FFFFFF; border: none; border-radius: 6px;
+        padding: 10px 18px; font-size: 13px; font-weight: 600; cursor: pointer;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         transition: background 120ms ease;
     }
@@ -68,7 +50,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
 
         const DNI_REGEX = /\\b(\\d{8})\\b/;
         const SCAN_INTERVAL_MS = 250;
-        const ANTI_REBOTE_MS = 1200;
+        const ANTI_REBOTE_MS = 1500;
 
         let stream = null;
         let detector = null;
@@ -120,7 +102,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             _tono(90,0.30,'sawtooth',0.45,0.36);
         }
         function sonidoIncidencia() { _tono(523,0.10,'triangle',0.35,0); _tono(523,0.10,'triangle',0.35,0.15); }
-
         function reproducir(kind) {
             try {
                 getAudioCtx();
@@ -141,6 +122,30 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         function desbloquearAudio() { getAudioCtx(); }
         document.addEventListener('touchstart', desbloquearAudio, { once: true });
         document.addEventListener('click', desbloquearAudio, { once: true });
+
+        // ============================================================
+        // PUENTE POR URL: escribe el DNI en la URL del padre
+        // ============================================================
+        function emitirDniPorUrl(dni) {
+            try {
+                // 1. setTriggerValue (por si funciona)
+                try { setTriggerValue("qr_dni", dni); } catch (e) {}
+                // 2. Puente por URL en el padre
+                const url = new URL(window.parent.location.href);
+                url.searchParams.set("qr_dni", dni);
+                url.searchParams.set("qr_ts", String(Date.now()));
+                window.parent.history.replaceState({}, "", url.toString());
+                console.log('[QR] DNI escrito en URL:', dni);
+            } catch (e) {
+                console.error('[QR] emitirDniPorUrl fallo:', e);
+                // Fallback: intentar con el propio iframe
+                try {
+                    const url2 = new URL(window.location.href);
+                    url2.searchParams.set("qr_dni", dni);
+                    window.history.replaceState({}, "", url2.toString());
+                } catch (e2) {}
+            }
+        }
 
         // ============================================================
         // UTILIDADES
@@ -220,7 +225,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         }
 
         // ============================================================
-        // POLYFILL ZXING
+        // POLYFILL
         // ============================================================
         function cargarPolyfill() {
             return new Promise((resolve, reject) => {
@@ -322,7 +327,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                                     ultimoDni = dni;
                                     ultimoTimestampDni = ahora;
                                     setStatus('QR: ' + dni);
-                                    setTriggerValue("qr_dni", dni);
+                                    emitirDniPorUrl(dni);
                                 }
                             }
                         }
@@ -349,9 +354,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         });
         window.addEventListener('beforeunload', detenerCamara);
 
-        // ============================================================
-        // ARRANQUE
-        // ============================================================
         setTimeout(() => {
             conectarBotonPausa();
             iniciarScanner();
