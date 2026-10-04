@@ -1,11 +1,11 @@
 # qr_scanner_component.py
-# Componente QR completo con BarcodeDetector + Polyfill ZXing.
-# Incluye: sonidos diferenciados, aviso flotante con nombre del estudiante,
+# Componente QR con BarcodeDetector + Polyfill ZXing.
+# Incluye: sonidos diferenciados, aviso flotante ARRIBA con el nombre,
 # boton de pausa, boton de reinicio, video cuadrado, y protecciones contra NotReadableError.
 import streamlit as st
 
 QR_SCANNER_COMPONENT = st.components.v2.component(
-    name="mi_qr_scanner_v26",
+    name="mi_qr_scanner_v27",
     isolate_styles=False,
     html="""
     <div id="qr-wrapper">
@@ -26,7 +26,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
     css="""
     #qr-wrapper {
         width: 100%;
-        max-width: 400px;
+        max-width: 320px;
         margin: 0 auto;
         position: relative;
     }
@@ -35,10 +35,10 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         overflow: hidden;
         border: 2px solid #E65100;
         background: #000;
-        aspect-ratio: 1 / 1;
         width: 100%;
-        display: block;
+        height: 320px;
         object-fit: cover;
+        display: block;
     }
     #qr-wrapper.pausado #qr-video {
         border-color: #2E7D32;
@@ -48,42 +48,47 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
     .qr-toast-oculto { display: none; }
     #qr-toast {
         position: absolute;
-        top: 16px;
+        top: 12px;
         left: 50%;
         transform: translateX(-50%);
-        min-width: 260px;
-        max-width: 92%;
-        padding: 14px 18px;
+        min-width: 240px;
+        max-width: 94%;
+        padding: 12px 16px;
         border-radius: 12px;
-        background: rgba(20, 20, 20, 0.92);
+        background: rgba(20, 20, 20, 0.94);
         color: #FFFFFF;
-        backdrop-filter: blur(6px);
-        -webkit-backdrop-filter: blur(6px);
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.40);
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         text-align: center;
         z-index: 100;
         border-left: 6px solid #888;
         pointer-events: none;
+        animation: qrSlideIn 0.18s ease-out;
     }
-    #qr-toast.toast-puntual    { border-left-color: #22C55E; }
-    #qr-toast.toast-tardanza   { border-left-color: #F59E0B; }
-    #qr-toast.toast-duplicado  { border-left-color: #9E9E9E; }
-    #qr-toast.toast-bloqueado  { border-left-color: #EF4444; background: rgba(60, 10, 10, 0.95); }
-    #qr-toast.toast-error      { border-left-color: #9E9E9E; }
-    #qr-toast.toast-incidencia { border-left-color: #3B82F6; }
+    @keyframes qrSlideIn {
+        from { opacity: 0; transform: translate(-50%, -8px); }
+        to   { opacity: 1; transform: translate(-50%, 0); }
+    }
+    #qr-toast.toast-puntual    { border-left-color: #22C55E; background: rgba(15, 40, 20, 0.95); }
+    #qr-toast.toast-tardanza   { border-left-color: #F59E0B; background: rgba(45, 30, 10, 0.95); }
+    #qr-toast.toast-duplicado  { border-left-color: #9E9E9E; background: rgba(35, 35, 35, 0.95); }
+    #qr-toast.toast-bloqueado  { border-left-color: #EF4444; background: rgba(60, 10, 10, 0.96); }
+    #qr-toast.toast-error      { border-left-color: #9E9E9E; background: rgba(35, 35, 35, 0.95); }
+    #qr-toast.toast-incidencia { border-left-color: #3B82F6; background: rgba(10, 30, 55, 0.95); }
 
     #qr-toast-titulo {
-        font-size: 12px;
-        font-weight: 700;
+        font-size: 11px;
+        font-weight: 800;
         text-transform: uppercase;
-        letter-spacing: 0.10em;
-        opacity: 0.8;
+        letter-spacing: 0.14em;
+        opacity: 0.85;
         margin-bottom: 4px;
     }
     #qr-toast-nombre {
-        font-size: 18px;
-        font-weight: 700;
+        font-size: 17px;
+        font-weight: 800;
         line-height: 1.2;
         letter-spacing: -0.01em;
     }
@@ -144,7 +149,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
 
         const DNI_REGEX = /\\b(\\d{8})\\b/;
         const SCAN_INTERVAL_MS = 250;
-        const DNI_COOLDOWN_MS = 3000;
+        const ANTI_REBOTE_MS = 800;
 
         let stream = null;
         let detector = null;
@@ -159,7 +164,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         const MAX_INTENTOS = 5;
 
         // ============================================================
-        // SISTEMA DE AUDIO
+        // AUDIO
         // ============================================================
         let audioCtx = null;
         function getAudioCtx() {
@@ -184,40 +189,18 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
             osc.start(t0); osc.stop(t0 + dur + 0.02);
         }
-        // PUNTUAL: DO -> MI -> SOL (subida alegre)
-        function sonidoPuntual() {
-            _tono(523, 0.10, 'sine', 0.40, 0);
-            _tono(659, 0.10, 'sine', 0.40, 0.10);
-            _tono(784, 0.15, 'sine', 0.40, 0.20);
-        }
-        // TARDANZA: dos notas descendentes graves
-        function sonidoTardanza() {
-            _tono(392, 0.15, 'sine', 0.40, 0);
-            _tono(294, 0.25, 'sine', 0.40, 0.18);
-        }
-        // DUPLICADO: buzz grave doble
-        function sonidoDuplicado() {
-            _tono(220, 0.18, 'square', 0.45, 0);
-            _tono(220, 0.18, 'square', 0.45, 0.22);
-        }
-        // ERROR: disonancia ascendente
+        function sonidoPuntual() { _tono(523,0.10,'sine',0.40,0); _tono(659,0.10,'sine',0.40,0.10); _tono(784,0.15,'sine',0.40,0.20); }
+        function sonidoTardanza() { _tono(392,0.15,'sine',0.40,0); _tono(294,0.25,'sine',0.40,0.18); }
+        function sonidoDuplicado() { _tono(220,0.18,'square',0.45,0); _tono(220,0.18,'square',0.45,0.22); }
         function sonidoError() {
-            _tono(180, 0.15, 'sawtooth', 0.45, 0);
-            _tono(250, 0.15, 'sawtooth', 0.45, 0.15);
-            _tono(330, 0.15, 'sawtooth', 0.45, 0.30);
-            _tono(440, 0.25, 'sawtooth', 0.45, 0.45);
+            _tono(180,0.15,'sawtooth',0.45,0); _tono(250,0.15,'sawtooth',0.45,0.15);
+            _tono(330,0.15,'sawtooth',0.45,0.30); _tono(440,0.25,'sawtooth',0.45,0.45);
         }
-        // BLOQUEADO: triple buzz grave
         function sonidoBloqueado() {
-            _tono(160, 0.15, 'sawtooth', 0.45, 0);
-            _tono(120, 0.15, 'sawtooth', 0.45, 0.18);
-            _tono(90, 0.30, 'sawtooth', 0.45, 0.36);
+            _tono(160,0.15,'sawtooth',0.45,0); _tono(120,0.15,'sawtooth',0.45,0.18);
+            _tono(90,0.30,'sawtooth',0.45,0.36);
         }
-        // INCIDENCIA: dos notas neutras
-        function sonidoIncidencia() {
-            _tono(523, 0.10, 'triangle', 0.35, 0);
-            _tono(523, 0.10, 'triangle', 0.35, 0.15);
-        }
+        function sonidoIncidencia() { _tono(523,0.10,'triangle',0.35,0); _tono(523,0.10,'triangle',0.35,0.15); }
 
         function reproducir(kind) {
             try {
@@ -235,6 +218,13 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         }
         window.__qrFeedback = reproducir;
         try { window.parent.__qrFeedback = reproducir; } catch (e) {}
+
+        // Desbloquear audio con el primer toque del usuario
+        function desbloquearAudioUnaVez() {
+            getAudioCtx();
+        }
+        document.addEventListener('touchstart', desbloquearAudioUnaVez, { once: true });
+        document.addEventListener('click', desbloquearAudioUnaVez, { once: true });
 
         // ============================================================
         // UTILIDADES
@@ -274,7 +264,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         }
 
         // ============================================================
-        // AVISO FLOTANTE
+        // TOAST
         // ============================================================
         let toastTimer = null;
         function mostrarToast(kind, nombre, detalle, titulo) {
@@ -357,7 +347,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         }
 
         // ============================================================
-        // CARGA DEL POLYFILL
+        // POLYFILL
         // ============================================================
         function cargarPolyfill() {
             return new Promise((resolve, reject) => {
@@ -371,29 +361,21 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                 const script = document.createElement('script');
                 script.src = 'https://cdn.jsdelivr.net/npm/@sec-ant/barcode-detector@1.3/dist/iife/side-effects.min.js';
                 script.async = true;
-                script.onload = () => {
-                    polyfillCargado = true;
-                    resolve();
-                };
-                script.onerror = () => {
-                    reject(new Error('No se pudo cargar el polyfill de escaneo.'));
-                };
+                script.onload = () => { polyfillCargado = true; resolve(); };
+                script.onerror = () => { reject(new Error('No se pudo cargar el polyfill.')); };
                 document.head.appendChild(script);
             });
         }
 
         // ============================================================
-        // INICIAR ESCANER
+        // INICIAR
         // ============================================================
         async function iniciarScanner() {
             if (iniciado) return;
             limpiarError();
             detenerCamara();
             videoElement = document.getElementById('qr-video');
-            if (!videoElement) {
-                setError('Contenedor de video no encontrado.');
-                return;
-            }
+            if (!videoElement) { setError('Contenedor de video no encontrado.'); return; }
             conectarBotones();
 
             try {
@@ -406,11 +388,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
 
                 setStatus('Solicitando acceso a la camara...');
                 stream = await navigator.mediaDevices.getUserMedia({
-                    video: {
-                        facingMode: 'environment',
-                        width: { ideal: 1280 },
-                        height: { ideal: 720 }
-                    },
+                    video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
                     audio: false
                 });
 
@@ -433,7 +411,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                 const esNotReadable = err.name === 'NotReadableError' ||
                                      (err.message && err.message.toLowerCase().includes('could not start'));
                 if (esNotReadable && intentosFallidos < MAX_INTENTOS) {
-                    setStatus('Camara ocupada. Reintentando en 2 segundos... (intento ' + intentosFallidos + '/' + MAX_INTENTOS + ')');
+                    setStatus('Camara ocupada. Reintentando en 2s... (' + intentosFallidos + '/' + MAX_INTENTOS + ')');
                     setTimeout(() => { iniciarScanner(); }, 2000);
                     return;
                 }
@@ -444,13 +422,13 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                 } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
                     setError('No se encontro ninguna camara.');
                 } else {
-                    setError('Error al acceder a la camara: ' + (err.message || err.name));
+                    setError('Error: ' + (err.message || err.name));
                 }
             }
         }
 
         // ============================================================
-        // BUCLE DE ESCANEO
+        // BUCLE
         // ============================================================
         function bucleEscaneo() {
             if (!iniciado || pausado || !videoElement || !detector) return;
@@ -465,7 +443,10 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                             if (match) {
                                 const dni = match[1];
                                 const ahora = Date.now();
-                                if (dni === ultimoDni && (ahora - ultimoTimestampDni) < DNI_COOLDOWN_MS) {
+                                // Anti-rebote: solo evita emitir el mismo DNI en frames
+                                // consecutivos dentro de los primeros 800ms.
+                                // Si pasan mas de 800ms, el mismo DNI se emite otra vez.
+                                if (dni === ultimoDni && (ahora - ultimoTimestampDni) < ANTI_REBOTE_MS) {
                                     // ignorar
                                 } else {
                                     ultimoDni = dni;
@@ -512,12 +493,10 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
 
 def qr_scanner(key="qr_scanner", on_scan=None, ultimo_mensaje=None):
     """
-    ultimo_mensaje: dict con keys opcionales:
+    ultimo_mensaje: dict con:
         kind: 'puntual' | 'tardanza' | 'duplicado' | 'bloqueado' | 'error' | 'incidencia'
-        titulo: texto pequeno arriba
-        nombre: nombre del estudiante
-        detalle: texto pequeno abajo
-    Si viene, se muestra como aviso flotante sobre el video.
+        titulo, nombre, detalle
+    Se muestra como aviso flotante ARRIBA del video.
     """
     if on_scan is None:
         on_scan = lambda: None
