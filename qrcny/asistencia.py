@@ -3900,82 +3900,19 @@ def escaner_qr_continuo(key="qr_scanner"):
         unsafe_allow_html=True
     )
 
-    # Callback: aqui llega el DNI escaneado desde el componente
-    def _on_scan(dni_nuevo=None, *args, **kwargs):
-        if not dni_nuevo:
-            return
-        dni_str = str(dni_nuevo).strip()
-        if not re.fullmatch(r"\d{8}", dni_str):
-            return
-        ult = st.session_state.get("_ultimo_qr_scan", {})
-        if (ult.get("dni") == dni_str and
-                (time.time() - ult.get("ts", 0)) < 1):
-            return
-        st.session_state["_ultimo_qr_scan"] = {"dni": dni_str, "ts": time.time()}
-        _procesar_escaneo(dni_str)
-
     key_full = "qr_scanner_persistente"
 
-    # Armar el ultimo mensaje para el toast flotante de arriba
-    ultimo_mensaje = None
-    mensajes = st.session_state.get("_qr_mensajes", [])
-    if mensajes:
-        m = mensajes[0]
-        if (time.time() - m.get("ts", 0)) < 6:
-            tipo = m.get("tipo", "ERROR")
-            msg_txt = m.get("mensaje", "")
-            extra = m.get("extra") or {}
-            alumno = extra.get("alumno") or {}
+    # Llamar al componente (version original: el DNI llega en result.qr_dni)
+    result = qr_scanner(key=key_full, on_scan=lambda: None)
 
-            if alumno:
-                nombre = (alumno.get("apellido_paterno", "") + " " +
-                          (alumno.get("apellido_materno") or "") + ", " +
-                          alumno.get("nombres", "")).strip(", ")
-                detalle = (alumno.get("grado", "") + " " +
-                           alumno.get("seccion", "") + " - " +
-                           alumno.get("turno", ""))
-            else:
-                nombre = "(no identificado)"
-                detalle = msg_txt
-
-            if tipo == "PUNTUAL":
-                kind = "puntual"; titulo = "PUNTUAL"
-            elif tipo == "TARDANZA":
-                kind = "tardanza"; titulo = "TARDANZA"
-                accion = extra.get("accion", "")
-                if accion:
-                    detalle = detalle + " - " + accion
-            elif tipo == "BLOQUEADO":
-                kind = "bloqueado"; titulo = "BLOQUEADO"
-                detalle = "Retener y llevar a TOECE"
-            elif tipo == "INCIDENCIA":
-                kind = "incidencia"; titulo = "INCIDENCIA REPORTADA"
-            elif tipo == "REFORZAMIENTO":
-                kind = "puntual"; titulo = "REFORZAMIENTO"
-            else:
-                if "ya registro" in msg_txt or "ya tiene" in msg_txt:
-                    kind = "duplicado"; titulo = "YA REGISTRADO"
-                elif "DNI no encontrado" in msg_txt:
-                    kind = "error"; titulo = "NO ENCONTRADO"
-                elif "Sin ventana" in msg_txt:
-                    kind = "error"; titulo = "FUERA DE VENTANA"
-                elif "Feriado" in msg_txt:
-                    kind = "error"; titulo = "FERIADO"
-                else:
-                    kind = "error"; titulo = "AVISO"
-
-            ultimo_mensaje = {
-                "kind": kind,
-                "titulo": titulo,
-                "nombre": nombre,
-                "detalle": detalle,
-                "mensaje": msg_txt,
-                "tipo": tipo,
-                "extra": extra,
-            }
-
-    # Llamar al componente. El DNI llega via _on_scan.
-    qr_scanner(key=key_full, on_scan=_on_scan, ultimo_mensaje=ultimo_mensaje)
+    # Leer el DNI del resultado, como en la version original
+    if result is not None and getattr(result, "qr_dni", None):
+        dni = str(result.qr_dni).strip()
+        if re.fullmatch(r"\d{8}", dni):
+            ult = st.session_state.get("_ultimo_qr_scan", {})
+            if not (ult.get("dni") == dni and (time.time() - ult.get("ts", 0)) < 1):
+                st.session_state["_ultimo_qr_scan"] = {"dni": dni, "ts": time.time()}
+                _procesar_escaneo(dni)
 
     # Sonido: disparar el sonido correspondiente
     sp = st.session_state.get("_qr_sonido_pendiente")
@@ -3985,6 +3922,7 @@ def escaner_qr_continuo(key="qr_scanner"):
         st.components.v1.html(f"""
             <script>
             (function() {{
+                const NONCE = {nonce};
                 let tries = 0;
                 const disparar = () => {{
                     tries++;
