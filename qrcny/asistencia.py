@@ -3912,48 +3912,57 @@ def escaner_qr_continuo(key="qr_scanner"):
                 st.session_state["_ultimo_qr_scan"] = {"dni": dni, "ts": time.time()}
                 _procesar_escaneo(dni)
 
+    # Sonido: inyectar el kind en el input oculto del iframe del componente
     sp = st.session_state.get("_qr_sonido_pendiente")
-    if sp and (time.time() - sp.get("ts", 0)) < 30:
+    if sp:
         kind_js = sp["kind"]
         nonce = sp["nonce"]
-        st.components.v1.html(f"""
-            <script>
-            (function() {{
-                const NONCE = {nonce};
-                let tries = 0;
-                const disparar = () => {{
-                    tries++;
-                    try {{
-                        if (window.parent && typeof window.parent.__qrFeedback === 'function') {{
-                            window.parent.__qrFeedback('{kind_js}');
-                            return;
-                        }}
-                    }} catch(e) {{}}
-                    try {{
-                        const frames = document.querySelectorAll('iframe');
-                        for (const f of frames) {{
+        ultimo_nonce = st.session_state.get("_ultimo_nonce_sonado", 0)
+        if nonce != ultimo_nonce:
+            st.session_state["_ultimo_nonce_sonado"] = nonce
+            st.components.v1.html(f"""
+                <script>
+                (function() {{
+                    const KIND = '{kind_js}';
+                    let tries = 0;
+                    const disparar = () => {{
+                        tries++;
+                        let ok = false;
+                        try {{
+                            const frames = document.querySelectorAll('iframe');
+                            for (const f of frames) {{
+                                try {{
+                                    const doc = f.contentDocument || f.contentWindow.document;
+                                    if (!doc) continue;
+                                    const input = doc.getElementById('qr-sound-trigger');
+                                    if (input) {{
+                                        input.value = KIND;
+                                        input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                        ok = true;
+                                        break;
+                                    }}
+                                }} catch(e) {{}}
+                            }}
+                        }} catch(e) {{}}
+                        if (!ok) {{
                             try {{
-                                const w = f.contentWindow;
-                                if (w && typeof w.__qrFeedback === 'function') {{
-                                    w.__qrFeedback('{kind_js}');
-                                    return;
+                                if (window.parent && typeof window.parent.__qrFeedback === 'function') {{
+                                    window.parent.__qrFeedback(KIND);
+                                    ok = true;
                                 }}
                             }} catch(e) {{}}
                         }}
-                    }} catch(e) {{}}
-                    if (tries < 60) setTimeout(disparar, 100);
-                }};
-                disparar();
-            }})();
-            </script>
-        """, height=0)
-        st.session_state.pop("_qr_sonido_pendiente", None)
+                        if (!ok && tries < 60) setTimeout(disparar, 100);
+                    }};
+                    disparar();
+                }})();
+                </script>
+            """, height=0)
 
     if st.session_state.get("_qr_mensajes"):
         st.markdown('<div class="scan-ultimos">Ultimos escaneos</div>', unsafe_allow_html=True)
         for msg in st.session_state["_qr_mensajes"][:5]:
             _render_mensaje_qr(msg)
-
 def _puerta_manual(usuario, fecha):
     if es_fin_de_semana():
         st.warning("Hoy no es dia laboral.")
