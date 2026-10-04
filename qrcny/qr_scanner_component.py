@@ -1,15 +1,15 @@
 # qr_scanner_component.py
 # Componente QR completo con BarcodeDetector + Polyfill ZXing.
 # Incluye: sonidos diferenciados, aviso flotante con nombre del estudiante,
-# boton de pausa, boton de reinicio, y protecciones contra NotReadableError.
+# boton de pausa, boton de reinicio, video cuadrado, y protecciones contra NotReadableError.
 import streamlit as st
 
 QR_SCANNER_COMPONENT = st.components.v2.component(
-    name="mi_qr_scanner_v25",
+    name="mi_qr_scanner_v26",
     isolate_styles=False,
     html="""
     <div id="qr-wrapper">
-        <video id="qr-video" style="width:100%; border-radius:8px; background:#000;" playsinline autoplay muted></video>
+        <video id="qr-video" playsinline autoplay muted></video>
         <div id="qr-toast" class="qr-toast-oculto">
             <div id="qr-toast-titulo"></div>
             <div id="qr-toast-nombre"></div>
@@ -24,16 +24,21 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
     </div>
     """,
     css="""
-    #qr-wrapper { width: 100%; max-width: 500px; margin: 0 auto; position: relative; }
+    #qr-wrapper {
+        width: 100%;
+        max-width: 400px;
+        margin: 0 auto;
+        position: relative;
+    }
     #qr-video {
         border-radius: 8px;
         overflow: hidden;
         border: 2px solid #E65100;
         background: #000;
-        min-height: 260px;
-        object-fit: cover;
-        display: block;
+        aspect-ratio: 1 / 1;
         width: 100%;
+        display: block;
+        object-fit: cover;
     }
     #qr-wrapper.pausado #qr-video {
         border-color: #2E7D32;
@@ -136,11 +141,11 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
     js="""
     export default function(component) {
         const { setTriggerValue } = component;
-        
+
         const DNI_REGEX = /\\b(\\d{8})\\b/;
         const SCAN_INTERVAL_MS = 250;
         const DNI_COOLDOWN_MS = 3000;
-        
+
         let stream = null;
         let detector = null;
         let videoElement = null;
@@ -185,7 +190,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             _tono(659, 0.10, 'sine', 0.40, 0.10);
             _tono(784, 0.15, 'sine', 0.40, 0.20);
         }
-        // TARDANZA: dos notas descendentes graves (suena "mal")
+        // TARDANZA: dos notas descendentes graves
         function sonidoTardanza() {
             _tono(392, 0.15, 'sine', 0.40, 0);
             _tono(294, 0.25, 'sine', 0.40, 0.18);
