@@ -3902,43 +3902,16 @@ def escaner_qr_continuo(key="qr_scanner"):
 
     key_full = "qr_scanner_persistente"
 
-    # Render del componente
-    qr_scanner(key=key_full, on_scan=lambda: None)
+    result = qr_scanner(key=key_full, on_scan=lambda: None)
 
-    # Leer el DNI de los query params de la URL
-    try:
-        qp = st.query_params
-    except AttributeError:
-        qp = st.experimental_get_query_params()
-
-    dni_qr = None
-    qr_ts = None
-    try:
-        dni_qr = qp.get("qr_dni")
-        qr_ts = qp.get("qr_ts")
-        if isinstance(dni_qr, list):
-            dni_qr = dni_qr[0] if dni_qr else None
-        if isinstance(qr_ts, list):
-            qr_ts = qr_ts[0] if qr_ts else None
-    except Exception:
-        pass
-
-    if dni_qr:
-        dni_str = str(dni_qr).strip()
-        if re.fullmatch(r"\d{8}", dni_str):
-            ts_val = None
-            try:
-                ts_val = float(qr_ts) if qr_ts else None
-            except (ValueError, TypeError):
-                ts_val = None
+    if result is not None and getattr(result, "qr_dni", None):
+        dni = str(result.qr_dni).strip()
+        if re.fullmatch(r"\d{8}", dni):
             ult = st.session_state.get("_ultimo_qr_scan", {})
-            mismo = (ult.get("dni") == dni_str)
-            reciente = ts_val and ult.get("ts") == ts_val
-            if not (mismo and reciente):
-                st.session_state["_ultimo_qr_scan"] = {"dni": dni_str, "ts": ts_val or time.time()}
-                _procesar_escaneo(dni_str)
+            if not (ult.get("dni") == dni and (time.time() - ult.get("ts", 0)) < 1):
+                st.session_state["_ultimo_qr_scan"] = {"dni": dni, "ts": time.time()}
+                _procesar_escaneo(dni)
 
-    # Sonido
     sp = st.session_state.get("_qr_sonido_pendiente")
     if sp and (time.time() - sp.get("ts", 0)) < 30:
         kind_js = sp["kind"]
@@ -3976,7 +3949,6 @@ def escaner_qr_continuo(key="qr_scanner"):
         """, height=0)
         st.session_state.pop("_qr_sonido_pendiente", None)
 
-    # Lista de ultimos escaneos debajo del escaner
     if st.session_state.get("_qr_mensajes"):
         st.markdown('<div class="scan-ultimos">Ultimos escaneos</div>', unsafe_allow_html=True)
         for msg in st.session_state["_qr_mensajes"][:5]:
