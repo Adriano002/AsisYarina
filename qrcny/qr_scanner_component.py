@@ -1,9 +1,5 @@
-# qr_scanner_component.py
-# Escaner QR con BarcodeDetector + polyfill ZXing.
-# Deteccion en vivo, proteccion contra NotReadableError, pausa al cambiar pestaña,
-# y sonido disparado desde el propio componente.
-import streamlit as st
 
+import streamlit as st
 QR_SCANNER_COMPONENT = st.components.v2.component(
     name="mi_qr_scanner_v50",
     isolate_styles=False,
@@ -163,9 +159,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         document.addEventListener('click', () => { getAudioCtx(); }, { once: true });
         document.addEventListener('touchstart', () => { getAudioCtx(); }, { once: true });
 
-        // ══════════════════════════════════════════════════════
-        // UTILIDADES
-        // ══════════════════════════════════════════════════════
         function setStatus(t) {
             const el = document.getElementById('qr-status');
             if (el) { el.textContent = t; el.style.display = 'block'; }
@@ -203,10 +196,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             ultimoDni = null;
             ultimoTimestampDni = 0;
         }
-
-        // ══════════════════════════════════════════════════════
-        // POLYFILL
-        // ══════════════════════════════════════════════════════
+        
         function cargarPolyfill() {
             return new Promise((resolve, reject) => {
                 if (polyfillCargado) { resolve(); return; }
@@ -223,9 +213,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             });
         }
 
-        // ══════════════════════════════════════════════════════
-        // INICIAR
-        // ══════════════════════════════════════════════════════
         async function iniciarScanner() {
             if (iniciado) return;
             limpiarError();
@@ -280,9 +267,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             }
         }
 
-        // ══════════════════════════════════════════════════════
-        // BUCLE
-        // ══════════════════════════════════════════════════════
+       
         function bucleEscaneo() {
             if (!iniciado || !videoElement || !detector) return;
             if (videoElement.readyState >= 2) {
@@ -315,9 +300,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             if (iniciado) scanLoop = setTimeout(bucleEscaneo, SCAN_INTERVAL_MS);
         }
 
-        // ══════════════════════════════════════════════════════
-        // VISIBILITY
-        // ══════════════════════════════════════════════════════
+     
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'hidden') {
                 detenerCamara();
@@ -345,9 +328,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             } catch(e) {}
         }
 
-        // ══════════════════════════════════════════════════════
-        // ARRANQUE
-        // ══════════════════════════════════════════════════════
+     
         setTimeout(() => {
             iniciarScanner();
             // Revisar si hay sonido pendiente al arrancar
