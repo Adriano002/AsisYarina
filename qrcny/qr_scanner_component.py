@@ -1,10 +1,14 @@
 import streamlit as st
 
 QR_SCANNER_COMPONENT = st.components.v2.component(
-    name="mi_qr_scanner_v53",
+    name="mi_qr_scanner_v54",
     isolate_styles=False,
     html="""
     <div id="qr-wrapper">
+        <div id="qr-header">
+            <div id="qr-titulo">Escaneo QR</div>
+            <button id="qr-toggle" type="button">⏸ Pausar</button>
+        </div>
         <video id="qr-video" playsinline autoplay muted></video>
         <div id="qr-status">Iniciando camara...</div>
         <div id="qr-error" style="display:none;"></div>
@@ -17,6 +21,34 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         margin: 0 auto;
         position: relative;
     }
+    #qr-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 8px;
+        gap: 10px;
+    }
+    #qr-titulo {
+        font-size: 15px;
+        font-weight: 700;
+        color: #E65100;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    #qr-toggle {
+        background: #E65100;
+        color: #FFF;
+        border: none;
+        border-radius: 8px;
+        padding: 8px 14px;
+        font-size: 13px;
+        font-weight: 700;
+        cursor: pointer;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        transition: background 0.15s ease;
+    }
+    #qr-toggle:hover { background: #BF360C; }
+    #qr-toggle.pausado { background: #22C55E; }
+    #qr-toggle.pausado:hover { background: #16A34A; }
     #qr-video {
         border-radius: 10px;
         overflow: hidden;
@@ -26,6 +58,10 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         height: 300px;
         object-fit: cover;
         display: block;
+    }
+    #qr-video.pausado {
+        opacity: 0.4;
+        filter: grayscale(100%);
     }
     #qr-status {
         text-align: center;
@@ -56,6 +92,9 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         const ARRANQUE_ESPERA_MS = 2000;
         const SONIDO_CHECK_MS = 150;
 
+        // Persistencia por usuario (en sessionStorage del navegador)
+        const KEY_PAUSADO = 'qr_scanner_pausado';
+
         let stream = null;
         let detector = null;
         let videoElement = null;
@@ -73,8 +112,11 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         const MAX_INTENTOS = 5;
         const MAX_FRAMES_SIN_QR = 3;
 
+        // Estado de pausa (persistente por sesión)
+        let pausado = sessionStorage.getItem(KEY_PAUSADO) === '1';
+
         // ══════════════════════════════════════════════════════
-        // AUDIO - con rotación de AudioContext (evita saturación)
+        // AUDIO - con rotación de AudioContext
         // ══════════════════════════════════════════════════════
         let audioCtx = null;
         let sonidosReproducidos = 0;
@@ -91,10 +133,8 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                 if (!Ctx) return null;
                 audioCtx = new Ctx();
                 sonidosReproducidos = 0;
-                console.log('[QR] AudioContext NUEVO. Estado:', audioCtx.state);
                 return audioCtx;
             } catch(e) {
-                console.warn('[QR] No se pudo crear AudioContext:', e);
                 audioCtx = null;
                 return null;
             }
@@ -112,7 +152,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                 let ctx = getAudioCtx();
                 if (!ctx) return null;
                 if (sonidosReproducidos >= MAX_SONIDOS_POR_CTX) {
-                    console.log('[QR] Rotando AudioContext tras', sonidosReproducidos, 'sonidos');
                     ctx = crearAudioContext();
                 }
                 if (!ctx) return null;
@@ -120,14 +159,12 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                     ctx.resume().catch(() => {});
                     setTimeout(() => {
                         if (audioCtx && audioCtx.state !== 'running') {
-                            console.warn('[QR] Resume fallo, recreando');
                             crearAudioContext();
                         }
                     }, 50);
                 }
                 return ctx;
             } catch(e) {
-                console.warn('[QR] asegurarAudioActivo error:', e);
                 return crearAudioContext();
             }
         }
@@ -150,7 +187,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                     try { osc.disconnect(); g.disconnect(); } catch(e) {}
                 };
                 sonidosReproducidos++;
-            } catch(e) { console.warn('[QR] _tono error:', e); }
+            } catch(e) {}
         }
 
         function sonidoPuntual() {
@@ -188,21 +225,17 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                     case "error":
                     default:            sonidoError();       break;
                 }
-            } catch(e) { console.error('[QR] _reproducirAhora:', e); }
+            } catch(e) {}
         }
 
         function reproducir(kind) {
             try {
                 const ahora = Date.now();
-                if (ahora - ultimoMsSonido < MIN_MS_ENTRE_SONIDOS) {
-                    console.log('[QR] Sonido bloqueado por anti-saturación');
-                    return;
-                }
+                if (ahora - ultimoMsSonido < MIN_MS_ENTRE_SONIDOS) return;
                 ultimoMsSonido = ahora;
                 asegurarAudioActivo();
                 _reproducirAhora(kind);
-                console.log('[QR] Sonando:', kind, '(ctx:', sonidosReproducidos + ')');
-            } catch(e) { console.error('[QR] reproducir:', e); }
+            } catch(e) {}
         }
 
         window.__qrFeedback = reproducir;
@@ -240,13 +273,44 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             const s = document.getElementById('qr-status');
             if (e) { e.textContent = t; e.style.display = 'block'; }
             if (s) s.style.display = 'none';
-            console.error('[QR]', t);
         }
         function limpiarError() {
             const e = document.getElementById('qr-error');
             if (e) { e.style.display = 'none'; }
         }
 
+        // ══════════════════════════════════════════════════════
+        // BOTÓN PAUSAR / ACTIVAR
+        // ══════════════════════════════════════════════════════
+        function actualizarBoton() {
+            const btn = document.getElementById('qr-toggle');
+            const video = document.getElementById('qr-video');
+            if (!btn) return;
+            if (pausado) {
+                btn.textContent = '▶ Activar camara';
+                btn.classList.add('pausado');
+                if (video) video.classList.add('pausado');
+            } else {
+                btn.textContent = '⏸ Pausar';
+                btn.classList.remove('pausado');
+                if (video) video.classList.remove('pausado');
+            }
+        }
+
+        function togglePausa() {
+            pausado = !pausado;
+            sessionStorage.setItem(KEY_PAUSADO, pausado ? '1' : '0');
+            actualizarBoton();
+            if (pausado) {
+                detenerCamara();
+                setStatus('Camara pausada. Presiona Activar para reanudar.');
+            } else {
+                setStatus('Reanudando camara...');
+                setTimeout(() => { iniciarScanner(); }, 200);
+            }
+        }
+
+        // ══════════════════════════════════════════════════════
         function detenerCamara() {
             if (scanLoop) { clearTimeout(scanLoop); scanLoop = null; }
             if (stream) {
@@ -289,6 +353,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
 
         async function iniciarScanner() {
             if (iniciado) return;
+            if (pausado) { setStatus('Camara pausada.'); return; }
             limpiarError();
             detenerCamara();
             videoElement = document.getElementById('qr-video');
@@ -324,7 +389,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                 bucleEscaneo();
 
             } catch (err) {
-                console.error('[QR] Error:', err);
                 detenerCamara();
                 intentosFallidos++;
                 const esNotReadable = err.name === 'NotReadableError' ||
@@ -343,10 +407,12 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
 
         function bucleEscaneo() {
             if (!iniciado || !videoElement || !detector) return;
+            if (pausado) { scanLoop = setTimeout(bucleEscaneo, SCAN_INTERVAL_MS); return; }
+
             if (videoElement.readyState >= 2) {
                 detector.detect(videoElement)
                     .then(barcodes => {
-                        if (!iniciado) return;
+                        if (!iniciado || pausado) return;
                         if (Date.now() - arranqueTimestamp < ARRANQUE_ESPERA_MS) return;
 
                         if (barcodes && barcodes.length > 0) {
@@ -379,9 +445,9 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                             }
                         }
                     })
-                    .catch(err => { console.debug('[QR] Error detect:', err); });
+                    .catch(err => {});
             }
-            if (iniciado) scanLoop = setTimeout(bucleEscaneo, SCAN_INTERVAL_MS);
+            if (iniciado && !pausado) scanLoop = setTimeout(bucleEscaneo, SCAN_INTERVAL_MS);
         }
 
         document.addEventListener('visibilitychange', () => {
@@ -389,13 +455,16 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                 detenerCamara();
                 setStatus('Camara en pausa.');
             } else if (document.visibilityState === 'visible') {
-                if (!iniciado) {
-                    setTimeout(() => { if (!iniciado) iniciarScanner(); }, 1000);
+                if (!iniciado && !pausado) {
+                    setTimeout(() => { if (!iniciado && !pausado) iniciarScanner(); }, 1000);
                 }
             }
         });
         window.addEventListener('beforeunload', detenerCamara);
 
+        // ══════════════════════════════════════════════════════
+        // SONIDO PENDIENTE DESDE PYTHON
+        // ══════════════════════════════════════════════════════
         function revisarSonidoPendiente() {
             try {
                 if (!data) return;
@@ -403,23 +472,25 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                 const kind = data.sonido_kind || '';
                 if (nonce > 0 && nonce !== ultimoSonidoNonce && kind) {
                     ultimoSonidoNonce = nonce;
-                    console.log('[QR] Sonido pendiente:', kind, 'nonce:', nonce);
-                    const ctx = getAudioCtx();
-                    if (ctx && ctx.state === 'suspended') {
-                        ctx.resume().then(() => {
-                            reproducir(kind);
-                        }).catch(() => {
-                            reproducir(kind);
-                        });
-                    } else {
-                        reproducir(kind);
-                    }
+                    reproducir(kind);
                 }
-            } catch(e) { console.error('[QR] revisarSonido:', e); }
+            } catch(e) {}
         }
 
+        // ══════════════════════════════════════════════════════
+        // INICIALIZACIÓN
+        // ══════════════════════════════════════════════════════
         setTimeout(() => {
-            iniciarScanner();
+            const btn = document.getElementById('qr-toggle');
+            if (btn) btn.addEventListener('click', togglePausa);
+            actualizarBoton();
+
+            if (pausado) {
+                setStatus('Camara pausada. Presiona Activar para reanudar.');
+            } else {
+                iniciarScanner();
+            }
+
             revisarSonidoPendiente();
             if (sonidoLoop) clearInterval(sonidoLoop);
             sonidoLoop = setInterval(revisarSonidoPendiente, SONIDO_CHECK_MS);
