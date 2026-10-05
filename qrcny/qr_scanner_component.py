@@ -1,7 +1,7 @@
-
 import streamlit as st
+
 QR_SCANNER_COMPONENT = st.components.v2.component(
-    name="mi_qr_scanner_v50",
+    name="mi_qr_scanner_v51",
     isolate_styles=False,
     html="""
     <div id="qr-wrapper">
@@ -51,14 +51,16 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         const { setTriggerValue, data } = component;
 
         const DNI_REGEX = /\\b(\\d{8})\\b/;
-        const SCAN_INTERVAL_MS = 250;
-        const ANTI_REBOTE_MS = 1500;
+        const SCAN_INTERVAL_MS = 500;      // Escaneo cada 500ms (menos carga)
+        const ANTI_REBOTE_MS = 3500;       // Anti-rebote largo: 3.5s
         const ARRANQUE_ESPERA_MS = 2000;
+        const SONIDO_CHECK_MS = 100;       // Revisar sonido de Python cada 100ms
 
         let stream = null;
         let detector = null;
         let videoElement = null;
         let scanLoop = null;
+        let sonidoLoop = null;
         let ultimoDni = null;
         let ultimoTimestampDni = 0;
         let iniciado = false;
@@ -66,10 +68,13 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         let intentosFallidos = 0;
         let arranqueTimestamp = 0;
         let ultimoSonidoNonce = 0;
+        let ultimoDniEnviado = null;       // Para no enviar el mismo DNI dos veces
+        let contadorFrameSinQR = 0;        // Para no sonar si el detector se queda pegado
         const MAX_INTENTOS = 5;
+        const MAX_FRAMES_SIN_QR = 3;       // Después de 3 frames sin QR, resetea
 
         // ══════════════════════════════════════════════════════
-        // AUDIO - engine propio del componente
+        // AUDIO
         // ══════════════════════════════════════════════════════
         let audioCtx = null;
         function getAudioCtx() {
@@ -99,9 +104,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             osc.start(t0); osc.stop(t0 + dur + 0.02);
         }
 
-        function sonidoClick() {
-            _tono(880, 0.05, 'sine', 0.25, 0);
-        }
         function sonidoPuntual() {
             _tono(523, 0.10, 'sine', 0.40, 0);
             _tono(659, 0.10, 'sine', 0.40, 0.10);
@@ -135,18 +137,15 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                     case "tardanza":    sonidoTardanza();    break;
                     case "duplicado":   sonidoDuplicado();   break;
                     case "bloqueado":   sonidoBloqueado();   break;
-                    case "click":       sonidoClick();       break;
                     case "error":
                     default:            sonidoError();       break;
                 }
             } catch(e) { console.error('[QR] reproducir:', e); }
         }
 
-        // Exponer para postMessage por si acaso
         window.__qrFeedback = reproducir;
         try { window.parent.__qrFeedback = reproducir; } catch(e) {}
 
-        // Listener de postMessage (por si Python quiere forzar sonido)
         window.addEventListener('message', (event) => {
             try {
                 if (event.data && event.data.type === 'qr_sound' && event.data.kind) {
@@ -155,7 +154,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             } catch(e) {}
         });
 
-        // Desbloquear audio con el primer click
         document.addEventListener('click', () => { getAudioCtx(); }, { once: true });
         document.addEventListener('touchstart', () => { getAudioCtx(); }, { once: true });
 
@@ -195,8 +193,10 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             arranqueTimestamp = 0;
             ultimoDni = null;
             ultimoTimestampDni = 0;
+            ultimoDniEnviado = null;
+            contadorFrameSinQR = 0;
         }
-        
+
         function cargarPolyfill() {
             return new Promise((resolve, reject) => {
                 if (polyfillCargado) { resolve(); return; }
@@ -267,7 +267,9 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             }
         }
 
-       
+        // ══════════════════════════════════════════════════════
+        // BUCLE DE ESCANEO - CON RESET DE DETECTOR
+        // ══════════════════════════════════════════════════════
         function bucleEscaneo() {
             if (!iniciado || !videoElement || !detector) return;
             if (videoElement.readyState >= 2) {
@@ -275,23 +277,40 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                     .then(barcodes => {
                         if (!iniciado) return;
                         if (Date.now() - arranqueTimestamp < ARRANQUE_ESPERA_MS) return;
+
                         if (barcodes && barcodes.length > 0) {
+                            // Resetear contador de frames sin QR
+                            contadorFrameSinQR = 0;
                             const codigo = barcodes[0];
                             const texto = codigo.rawValue;
                             const match = texto.match(DNI_REGEX);
                             if (match) {
                                 const dni = match[1];
                                 const ahora = Date.now();
+
+                                // Anti-rebote: si es el mismo DNI y estamos dentro del tiempo, ignorar
                                 if (dni === ultimoDni && (ahora - ultimoTimestampDni) < ANTI_REBOTE_MS) {
-                                    // ignorar
-                                } else {
-                                    ultimoDni = dni;
-                                    ultimoTimestampDni = ahora;
-                                    // *** CLICK INMEDIATO ***
-                                    sonidoClick();
+                                    // Ignorar completamente, no hacer nada
+                                    return;
+                                }
+
+                                // Nuevo DNI o ya pasó el anti-rebote
+                                ultimoDni = dni;
+                                ultimoTimestampDni = ahora;
+
+                                // Solo enviar a Python si es un DNI nuevo (no reenviar el mismo)
+                                if (dni !== ultimoDniEnviado) {
+                                    ultimoDniEnviado = dni;
                                     setStatus('QR: ' + dni);
                                     setTriggerValue("qr_dni", dni);
                                 }
+                            }
+                        } else {
+                            // NO se detectó QR en este frame
+                            contadorFrameSinQR++;
+                            if (contadorFrameSinQR >= MAX_FRAMES_SIN_QR) {
+                                // Después de N frames sin QR, resetear para permitir volver a escanear el mismo
+                                ultimoDniEnviado = null;
                             }
                         }
                     })
@@ -300,7 +319,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             if (iniciado) scanLoop = setTimeout(bucleEscaneo, SCAN_INTERVAL_MS);
         }
 
-     
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'hidden') {
                 detenerCamara();
@@ -314,7 +332,7 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         window.addEventListener('beforeunload', detenerCamara);
 
         // ══════════════════════════════════════════════════════
-        // LEER SONIDO ESPECIFICO DESDE data
+        // SONIDO DESDE PYTHON - REVISAR CADA 100ms
         // ══════════════════════════════════════════════════════
         function revisarSonidoPendiente() {
             try {
@@ -328,13 +346,11 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             } catch(e) {}
         }
 
-     
         setTimeout(() => {
             iniciarScanner();
-            // Revisar si hay sonido pendiente al arrancar
             revisarSonidoPendiente();
-            // Y cada 500ms
-            setInterval(revisarSonidoPendiente, 500);
+            if (sonidoLoop) clearInterval(sonidoLoop);
+            sonidoLoop = setInterval(revisarSonidoPendiente, SONIDO_CHECK_MS);
         }, 500);
     }
     """,
