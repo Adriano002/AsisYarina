@@ -1,7 +1,7 @@
 import streamlit as st
 
 QR_SCANNER_COMPONENT = st.components.v2.component(
-    name="mi_qr_scanner_v51",
+    name="mi_qr_scanner_v53",
     isolate_styles=False,
     html="""
     <div id="qr-wrapper">
@@ -51,10 +51,10 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         const { setTriggerValue, data } = component;
 
         const DNI_REGEX = /\\b(\\d{8})\\b/;
-        const SCAN_INTERVAL_MS = 500;      // Escaneo cada 500ms (menos carga)
-        const ANTI_REBOTE_MS = 3500;       // Anti-rebote largo: 3.5s
+        const SCAN_INTERVAL_MS = 500;
+        const ANTI_REBOTE_MS = 3500;
         const ARRANQUE_ESPERA_MS = 2000;
-        const SONIDO_CHECK_MS = 100;       // Revisar sonido de Python cada 100ms
+        const SONIDO_CHECK_MS = 150;
 
         let stream = null;
         let detector = null;
@@ -68,40 +68,89 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         let intentosFallidos = 0;
         let arranqueTimestamp = 0;
         let ultimoSonidoNonce = 0;
-        let ultimoDniEnviado = null;       // Para no enviar el mismo DNI dos veces
-        let contadorFrameSinQR = 0;        // Para no sonar si el detector se queda pegado
+        let ultimoDniEnviado = null;
+        let contadorFrameSinQR = 0;
         const MAX_INTENTOS = 5;
-        const MAX_FRAMES_SIN_QR = 3;       // Después de 3 frames sin QR, resetea
+        const MAX_FRAMES_SIN_QR = 3;
 
         // ══════════════════════════════════════════════════════
-        // AUDIO
+        // AUDIO - con rotación de AudioContext (evita saturación)
         // ══════════════════════════════════════════════════════
         let audioCtx = null;
-        function getAudioCtx() {
-            if (!audioCtx) {
-                try {
-                    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                } catch(e) { console.warn('[QR] AudioContext fallo:', e); }
+        let sonidosReproducidos = 0;
+        const MAX_SONIDOS_POR_CTX = 40;
+        const MIN_MS_ENTRE_SONIDOS = 200;
+        let ultimoMsSonido = 0;
+
+        function crearAudioContext() {
+            try {
+                if (audioCtx && audioCtx.state !== 'closed') {
+                    try { audioCtx.close(); } catch(e) {}
+                }
+                const Ctx = window.AudioContext || window.webkitAudioContext;
+                if (!Ctx) return null;
+                audioCtx = new Ctx();
+                sonidosReproducidos = 0;
+                console.log('[QR] AudioContext NUEVO. Estado:', audioCtx.state);
+                return audioCtx;
+            } catch(e) {
+                console.warn('[QR] No se pudo crear AudioContext:', e);
+                audioCtx = null;
+                return null;
             }
-            if (audioCtx && audioCtx.state === 'suspended') {
-                audioCtx.resume().catch(() => {});
+        }
+
+        function getAudioCtx() {
+            if (!audioCtx || audioCtx.state === 'closed') {
+                return crearAudioContext();
             }
             return audioCtx;
         }
 
+        function asegurarAudioActivo() {
+            try {
+                let ctx = getAudioCtx();
+                if (!ctx) return null;
+                if (sonidosReproducidos >= MAX_SONIDOS_POR_CTX) {
+                    console.log('[QR] Rotando AudioContext tras', sonidosReproducidos, 'sonidos');
+                    ctx = crearAudioContext();
+                }
+                if (!ctx) return null;
+                if (ctx.state === 'suspended') {
+                    ctx.resume().catch(() => {});
+                    setTimeout(() => {
+                        if (audioCtx && audioCtx.state !== 'running') {
+                            console.warn('[QR] Resume fallo, recreando');
+                            crearAudioContext();
+                        }
+                    }, 50);
+                }
+                return ctx;
+            } catch(e) {
+                console.warn('[QR] asegurarAudioActivo error:', e);
+                return crearAudioContext();
+            }
+        }
+
         function _tono(freq, dur, tipo, vol, delay) {
-            const ctx = getAudioCtx();
+            const ctx = asegurarAudioActivo();
             if (!ctx) return;
-            const t0 = ctx.currentTime + (delay || 0);
-            const osc = ctx.createOscillator();
-            const g = ctx.createGain();
-            osc.connect(g); g.connect(ctx.destination);
-            osc.type = tipo || 'sine';
-            osc.frequency.setValueAtTime(freq, t0);
-            g.gain.setValueAtTime(0, t0);
-            g.gain.linearRampToValueAtTime(vol || 0.35, t0 + 0.015);
-            g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
-            osc.start(t0); osc.stop(t0 + dur + 0.02);
+            try {
+                const t0 = ctx.currentTime + (delay || 0);
+                const osc = ctx.createOscillator();
+                const g = ctx.createGain();
+                osc.connect(g); g.connect(ctx.destination);
+                osc.type = tipo || 'sine';
+                osc.frequency.setValueAtTime(freq, t0);
+                g.gain.setValueAtTime(0, t0);
+                g.gain.linearRampToValueAtTime(vol || 0.35, t0 + 0.015);
+                g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+                osc.start(t0); osc.stop(t0 + dur + 0.02);
+                osc.onended = () => {
+                    try { osc.disconnect(); g.disconnect(); } catch(e) {}
+                };
+                sonidosReproducidos++;
+            } catch(e) { console.warn('[QR] _tono error:', e); }
         }
 
         function sonidoPuntual() {
@@ -129,9 +178,8 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             _tono(90, 0.30, 'sawtooth', 0.45, 0.36);
         }
 
-        function reproducir(kind) {
+        function _reproducirAhora(kind) {
             try {
-                getAudioCtx();
                 switch (kind) {
                     case "puntual":     sonidoPuntual();     break;
                     case "tardanza":    sonidoTardanza();    break;
@@ -140,6 +188,20 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                     case "error":
                     default:            sonidoError();       break;
                 }
+            } catch(e) { console.error('[QR] _reproducirAhora:', e); }
+        }
+
+        function reproducir(kind) {
+            try {
+                const ahora = Date.now();
+                if (ahora - ultimoMsSonido < MIN_MS_ENTRE_SONIDOS) {
+                    console.log('[QR] Sonido bloqueado por anti-saturación');
+                    return;
+                }
+                ultimoMsSonido = ahora;
+                asegurarAudioActivo();
+                _reproducirAhora(kind);
+                console.log('[QR] Sonando:', kind, '(ctx:', sonidosReproducidos + ')');
             } catch(e) { console.error('[QR] reproducir:', e); }
         }
 
@@ -154,9 +216,21 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             } catch(e) {}
         });
 
-        document.addEventListener('click', () => { getAudioCtx(); }, { once: true });
-        document.addEventListener('touchstart', () => { getAudioCtx(); }, { once: true });
+        function desbloquearAudio() {
+            try {
+                if (!audioCtx || audioCtx.state === 'closed') crearAudioContext();
+                if (audioCtx && audioCtx.state === 'suspended') {
+                    audioCtx.resume().catch(() => {});
+                }
+            } catch(e) {}
+        }
 
+        ['click', 'touchstart', 'touchend', 'keydown', 'mousedown', 'pointerdown']
+            .forEach(evt => document.addEventListener(evt, desbloquearAudio, { passive: true }));
+        window.addEventListener('focus', desbloquearAudio);
+        window.addEventListener('pageshow', desbloquearAudio);
+
+        // ══════════════════════════════════════════════════════
         function setStatus(t) {
             const el = document.getElementById('qr-status');
             if (el) { el.textContent = t; el.style.display = 'block'; }
@@ -267,9 +341,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
             }
         }
 
-        // ══════════════════════════════════════════════════════
-        // BUCLE DE ESCANEO - CON RESET DE DETECTOR
-        // ══════════════════════════════════════════════════════
         function bucleEscaneo() {
             if (!iniciado || !videoElement || !detector) return;
             if (videoElement.readyState >= 2) {
@@ -279,7 +350,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                         if (Date.now() - arranqueTimestamp < ARRANQUE_ESPERA_MS) return;
 
                         if (barcodes && barcodes.length > 0) {
-                            // Resetear contador de frames sin QR
                             contadorFrameSinQR = 0;
                             const codigo = barcodes[0];
                             const texto = codigo.rawValue;
@@ -288,28 +358,23 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                                 const dni = match[1];
                                 const ahora = Date.now();
 
-                                // Anti-rebote: si es el mismo DNI y estamos dentro del tiempo, ignorar
                                 if (dni === ultimoDni && (ahora - ultimoTimestampDni) < ANTI_REBOTE_MS) {
-                                    // Ignorar completamente, no hacer nada
                                     return;
                                 }
 
-                                // Nuevo DNI o ya pasó el anti-rebote
                                 ultimoDni = dni;
                                 ultimoTimestampDni = ahora;
 
-                                // Solo enviar a Python si es un DNI nuevo (no reenviar el mismo)
                                 if (dni !== ultimoDniEnviado) {
                                     ultimoDniEnviado = dni;
+                                    desbloquearAudio();
                                     setStatus('QR: ' + dni);
                                     setTriggerValue("qr_dni", dni);
                                 }
                             }
                         } else {
-                            // NO se detectó QR en este frame
                             contadorFrameSinQR++;
                             if (contadorFrameSinQR >= MAX_FRAMES_SIN_QR) {
-                                // Después de N frames sin QR, resetear para permitir volver a escanear el mismo
                                 ultimoDniEnviado = null;
                             }
                         }
@@ -331,9 +396,6 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
         });
         window.addEventListener('beforeunload', detenerCamara);
 
-        // ══════════════════════════════════════════════════════
-        // SONIDO DESDE PYTHON - REVISAR CADA 100ms
-        // ══════════════════════════════════════════════════════
         function revisarSonidoPendiente() {
             try {
                 if (!data) return;
@@ -341,9 +403,19 @@ QR_SCANNER_COMPONENT = st.components.v2.component(
                 const kind = data.sonido_kind || '';
                 if (nonce > 0 && nonce !== ultimoSonidoNonce && kind) {
                     ultimoSonidoNonce = nonce;
-                    reproducir(kind);
+                    console.log('[QR] Sonido pendiente:', kind, 'nonce:', nonce);
+                    const ctx = getAudioCtx();
+                    if (ctx && ctx.state === 'suspended') {
+                        ctx.resume().then(() => {
+                            reproducir(kind);
+                        }).catch(() => {
+                            reproducir(kind);
+                        });
+                    } else {
+                        reproducir(kind);
+                    }
                 }
-            } catch(e) {}
+            } catch(e) { console.error('[QR] revisarSonido:', e); }
         }
 
         setTimeout(() => {
